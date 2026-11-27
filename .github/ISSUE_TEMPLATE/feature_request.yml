@@ -1,0 +1,21 @@
+name: Idea or request
+description: Something you'd like co-op to do.
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome! Please check the [open issues](https://github.com/Jaumjvrs/SavageWind-Coop/issues) first in case someone already asked.
+        This is a one-person hobby project, so there are no promises about when (or if) something gets done.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: What you'd like to happen in the game, and when it would matter (for example "fighting a Divine Beast boss together").
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: What happens now?
+      description: What co-op does today in that situation, if you tried it.

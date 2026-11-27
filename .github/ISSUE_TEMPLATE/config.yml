@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help with setup
+    url: https://github.com/Jaumjvrs/SavageWind-Coop/discussions/categories/q-a
+    about: Ask in Q&A. Other players can help there too.
+  - name: Player guide
+    url: https://github.com/Jaumjvrs/SavageWind-Coop/blob/main/Co-op/COOP-HOWTO.md
+    about: Setup, hosting, split screen and fixes for common problems.
+  - name: Security problem
+    url: https://github.com/Jaumjvrs/SavageWind-Coop/security/advisories/new
+    about: Found a way to crash or take over another player's game? Report it privately here.

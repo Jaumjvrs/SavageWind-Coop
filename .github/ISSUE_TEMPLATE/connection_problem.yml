@@ -1,0 +1,45 @@
+name: Can't connect
+description: Joining or hosting an online game doesn't work.
+labels: ["connection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        First check the [player guide](https://github.com/Jaumjvrs/SavageWind-Coop/blob/main/Co-op/COOP-HOWTO.md): most connection problems are the router, Windows Firewall, or a different co-op version.
+  - type: input
+    id: coop_version
+    attributes:
+      label: Co-op version (everyone's)
+      placeholder: "0.1.0 for both of us"
+    validations:
+      required: true
+  - type: dropdown
+    id: side
+    attributes:
+      label: Are you the host or the one joining?
+      options:
+        - Host
+        - Joining
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens?
+      description: What the Co-op menu says (for example the router message under Host), and what the player joining sees.
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What you already tried
+      options:
+        - label: The host clicked "Allow" when Windows asked about the network (or allowed the game in Windows Firewall).
+        - label: Both used the same room code.
+        - label: The joining player used the address the host's Co-op menu showed.
+        - label: Tried a VPN such as Tailscale, or another player as host.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log files
+      description: Drag and drop `Co-op\play\savagewind.log` from the host and from the player joining (no game files in it).

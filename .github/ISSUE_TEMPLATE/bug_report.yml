@@ -1,0 +1,78 @@
+name: Bug or crash
+description: Something in co-op doesn't work, looks wrong, or the game crashes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A few details make it much faster to fix.
+        **Please don't attach game files or saves.** Questions about setup go to [Q&A](https://github.com/Jaumjvrs/SavageWind-Coop/discussions/categories/q-a) instead.
+  - type: input
+    id: coop_version
+    attributes:
+      label: Co-op version
+      description: The version from the release you downloaded (also at the top of `Co-op\CHANGELOG.md`).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: sw_version
+    attributes:
+      label: Savage Wind version
+      placeholder: "0.6.0-alpha.6"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How were you playing?
+      options:
+        - Online, I was the host
+        - Online, I joined someone
+        - Split screen on one PC
+    validations:
+      required: true
+  - type: input
+    id: players
+    attributes:
+      label: How many players?
+      placeholder: "2"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected instead. Screenshots or a short video help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: Where in the game you were and what you did (for example "Great Plateau, my friend opened a chest next to me").
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log file
+      description: |
+        Drag and drop `Co-op\play\savagewind.log` here (from the player who saw the problem; both players' logs if you can).
+        It has no game files in it. If the game crashed, attach it right after the crash, before starting the game again.
+    validations:
+      required: true
+  - type: input
+    id: pc
+    attributes:
+      label: Windows version and graphics card (optional)
+      placeholder: "Windows 11, RTX 3060"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: Everyone in the game used the same co-op version.
+          required: true
+        - label: I didn't attach game files or saves.
+          required: true
