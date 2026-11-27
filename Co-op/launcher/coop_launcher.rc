@@ -1,0 +1,3 @@
+// Savage Wind Co-op.exe icon (the same icon as savagewind.exe: upstream docs/icon/icon.ico)
+1 ICON "icon.ico"
+1 24 "coop_launcher.manifest"
