@@ -286,6 +286,11 @@ enum { COOP_TINT_NONE, COOP_TINT_RED, COOP_TINT_BLUE, COOP_TINT_GREEN, COOP_TINT
        COOP_TINT_BLACK, COOP_TINT_WHITE, COOP_TINT_COUNT };
 void coop_net_set_tint(int tint);         // ours
 int coop_net_player_tint(int pid);        // that player's (0 unknown / none)
+// (ENEMYHP) Enemy life percent added per extra player (0 off, max COOP_ENEMY_HP_MAX). The host decides: set ours (the
+// menu / settings); read the one in force: ours when hosting or solo, the host's as a guest (-1 until heard).
+#define COOP_ENEMY_HP_MAX 400
+void coop_net_set_enemy_hp(int per);
+int coop_net_enemy_hp(void);
 bool coop_net_player_name(int pid, char *out, size_t cap);  // that player's name; false: none known
 // (coop-looks) Names above the other players' heads: the game thread places them (coop/looks.inc), the overlay
 // (ui/menu.mm) draws them. x, y: in the window, 0..1; alpha 0..1; size: a scale (1 near).

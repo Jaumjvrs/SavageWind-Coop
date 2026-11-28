@@ -438,6 +438,19 @@ int main(int argc, char **argv) {
         // picture's first frame, boot_splash_start, not as an empty black window while the game code loads.)
         extern void ui_window_init_hidden(void);
         ui_window_init_hidden();
+        // (split banner, runtime/coop_split.cpp) only the boot picture in its quarter until player 1 ends it
+        if (getenv("SAVAGEWIND_COOP_SPLIT_BANNER") && getenv("SAVAGEWIND_COOP_SPLIT_CHILD")) {
+            extern void boot_splash_banner(const char *root);
+            boot_splash_banner(root);
+        }
+    }
+#elif defined(__linux__)
+    // (split banner on Linux, runtime/coop_split_linux.inc: the window made now, the game never loaded)
+    if (mode == LAUNCHER_NONE && getenv("SAVAGEWIND_COOP_SPLIT_BANNER") && getenv("SAVAGEWIND_COOP_SPLIT_CHILD")) {
+        extern void ui_window_init_hidden(void);
+        extern void boot_splash_banner(const char *root);
+        ui_window_init_hidden();
+        boot_splash_banner(root);
     }
 #endif
     for (;;) {

@@ -50,6 +50,15 @@ static int dm_none(SOCKET s, int tries) {
     return 1;
 }
 
+static void dm_drain(SOCKET s) {
+    unsigned long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+    char tmp[MAX_DATAGRAM + COOP_TAG + 1];
+    while (recv(s, tmp, sizeof tmp, 0) > 0) {}
+    nb = 0;
+    ioctlsocket(s, FIONBIO, &nb);
+}
+
 static int multidish_main(void) {
     WSADATA w; assert(!WSAStartup(MAKEWORD(2,2),&w));
     SOCKET ga = loop_socket(), gb = loop_socket(), gc = loop_socket();
@@ -113,6 +122,7 @@ static int multidish_main(void) {
     CoopDishOffer wrong = mine; wrong.to = 902; assert(!coop_net_send_event_to(3,COOP_EV_DISH,&wrong,sizeof wrong));
     wrong = mine; wrong.to_pid = 2; assert(!coop_net_send_event_to(3,COOP_EV_DISH,&wrong,sizeof wrong));
     wrong = mine; wrong.from_pid = 1; assert(!coop_net_send_event_to(3,COOP_EV_DISH,&wrong,sizeof wrong));
+    dm_drain(gc);
     assert(coop_net_send_event_to(3,COOP_EV_DISH,&mine,sizeof mine));
     assert(dm_take(gc,COOP_EV_DISH,&got,sizeof got,40) && !memcmp(&got,&mine,sizeof mine));
     assert(dm_none(ga,4) && dm_ids(gb,COOP_EV_DISH,4)==0);

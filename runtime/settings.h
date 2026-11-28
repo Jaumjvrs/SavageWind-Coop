@@ -228,12 +228,14 @@ typedef struct {
     char coop_code[32];  // the join code both players type ("": none)
     int coop_names;      // (coop-looks) the other players' names shown above their heads (default 1)
     int coop_tint;       // (coop-looks) our tunic colour as the others see it (COOP_TINT_*, 0: the game's own)
-    int coop_sharemarks; // (coop-mapmark) map markers we place go to the others: 0 off, 1 pins only (default), 2 all
+    int coop_sharemarks; // (coop-mapmark) map markers we place go to the others: 0 off, 1 pins only, 2 all (default since 2026-11-27)
+    int coop_enemyhp;    // (ENEMYHP) host: enemy life percent added per extra player (0 off = the default, max 400)
     int coop_upnp;       // (coop-upnp) host: ask the router (UPnP) to forward the port while hosting (default 1)
     int split_audio;     // (coop-splitaudio) split screen player 2's sound: SPLIT_AUDIO_* (runtime/split_audio.h), 0 off
     char split_audio_device[128];  // its output device with SPLIT_AUDIO_DEVICE (UTF-8 name; "": the default)
     int split_layout;    // (0.1.1: the split screen layout did not persist) split screen layout (menu row)
     int split_pad;       // its controller choice for player 2 (menu row index, default 1)
+    int split_map_zoom;  // (split map) how close the three-player map is: SPLIT_ZOOM_* (runtime/coop_split_hud.h), 1 normal
 } Settings;
 
 #define RUMBLE_STRENGTH_MIN 10

@@ -97,7 +97,13 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR, P_COOP, P_COOP_LOBBY, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR, P_COOP, P_COOP_LOBBY, P_COOP_ONLINE, P_COOP_SPLIT, P_COOP_OPTS, P_COOP_DISH, P_COUNT };
+bool is_coop_page(int p) { return p >= P_COOP && p <= P_COOP_DISH; }  // (the setup, the lobby and their sub-menus)
+bool is_coop_sub(int p) { return p > P_COOP_LOBBY && p <= P_COOP_DISH; }
+int coop_page_of(int row_page) {  // coop_menu.h COOP_PAGE_*
+    static const int k[] = {P_COOP, P_COOP_LOBBY, P_COOP_ONLINE, P_COOP_SPLIT, P_COOP_OPTS, P_COOP_DISH};
+    return row_page >= 0 && row_page < 6 ? k[row_page] : P_COOP;
+}
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_SAVE_HDR_LOOK, A_COOP };
 // (P_COOP / P_COOP_LOBBY, A_COOP: Item.arg is a coop_menu.h row id; the rows' texts and A come from coop_menu.mm)
@@ -131,6 +137,10 @@ bool g_switching;                  // ... and its next opening shows g_next_page
 bool g_coop_from_title;            // the title menu's Co-op button opened the screen: B on the co-op page closes it
 uint64_t g_coop_title_button;      // ... and that button, its id turned into Options' for the game's handler (put back)
 std::vector<uint32_t> g_coop_order;  // the co-op page's rows shown at this opening (coop_menu_shown)
+bool g_coop_from_sub;              // B left a co-op sub-menu: the page it opens is the parent, as it was left
+int g_coop_focus = -1;             // ... with the cursor on this row (a coop_menu.h row id; set by A on a sub-menu button)
+int g_coop_focus_row = -1;
+int g_coop_focus_tries;
 uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
@@ -383,7 +393,7 @@ void build_items(void) {
         for (int i = 0; i < n; i++) {
             const CoopMenuRow &r = rows[i];
             Item it = {};
-            it.page = r.page == COOP_PAGE_LOBBY ? P_COOP_LOBBY : P_COOP, it.kind = r.kind, it.title = r.title;
+            it.page = coop_page_of(r.page), it.kind = r.kind, it.title = r.title;
             it.desc = r.desc, it.action = A_COOP, it.arg = r.id;
             it.count = [](const Item &it) { return coop_menu_count(it.arg); };
             it.label = [](const Item &it, int x) { return coop_menu_label(it.arg, x); };
@@ -1954,9 +1964,12 @@ extern "C" void rt_opt_rows(void) {
     if (g_coop_title_button) wr32(g_coop_title_button + 0x44, TITLE_AMIIBO_BUTTON), g_coop_title_button = 0;  // (rt_title_event)
     if (page == P_COOP && coop_menu_lobby()) page = P_COOP_LOBBY;  // (co-op runs: who is in it)
     else if (page == P_COOP_LOBBY && !coop_menu_lobby()) page = P_COOP;
-    if (page != P_COOP && page != P_COOP_LOBBY) g_coop_from_title = false;
-    if (page == P_COOP) coop_menu_setup(MSG_STRIDE - MSG_VALUE);
-    std::vector<uint32_t> &o = page == P_COOP || page == P_COOP_LOBBY ? g_coop_order : g_order[page];
+    if (!is_coop_page(page)) g_coop_from_title = false;
+    if (page == P_COOP && !g_coop_from_sub) coop_menu_setup(MSG_STRIDE - MSG_VALUE);  // (back from a sub-menu: the save pick stays)
+    g_coop_focus_row = g_coop_from_sub ? g_coop_focus : -1;  // (rt_opt_tick puts the cursor there)
+    g_coop_focus_tries = 0;
+    g_coop_from_sub = false;
+    std::vector<uint32_t> &o = is_coop_page(page) ? g_coop_order : g_order[page];
     if (&o == &g_coop_order) {
         o.clear();
         for (uint32_t e : g_order[page])
@@ -2276,6 +2289,11 @@ extern "C" int rt_opt_decide(uint64_t row) {
         case COOP_PRESS_REOPEN: g_next_page = g_cur_page; g_reopen = g_switching = true; return 1;
         case COOP_PRESS_LOBBY: g_next_page = P_COOP_LOBBY; g_reopen = g_switching = true; return 1;
         case COOP_PRESS_SETUP: g_next_page = P_COOP; g_reopen = g_switching = true; return 1;
+        case COOP_PRESS_SUBMENU:
+            g_coop_focus = it->arg;
+            g_next_page = coop_page_of(coop_menu_target(it->arg));
+            g_reopen = g_switching = true;
+            return 1;
         }
         return 2;
     case A_REPORT: {  // (runtime/problem_report.c) made in the data folder; no file manager over the game
@@ -2296,6 +2314,20 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         if (g_quit_dialog) return 1;
     }
     int d, s, ms;
+    if (g_coop_focus_row >= 0 && is_coop_page(g_cur_page)) {  // (back from a sub-menu: the cursor on its button)
+        uint32_t nrows = rd32(screen + g_site.opt_screen_rows);
+        uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
+        uint64_t found = 0;
+        for (uint32_t ri = 0; rows && ri < nrows && ri < 64 && !found; ri++)
+            if (uint64_t r = rd64(rows + 8 * ri))
+                if (const Item *it = item_of_row(r); it && it->action == A_COOP && it->arg == g_coop_focus_row) found = r;
+        if (found) {
+            int k = rt_opt_pointer_kind(found);
+            wr64(screen + 0x36c8, found);
+            pc_cursor_options_focus(screen, found, (unsigned)(k >= 0 ? k : 0));
+            g_coop_focus_row = -1;
+        } else if (++g_coop_focus_tries > 120) g_coop_focus_row = -1;
+    }
     if (g_cap_row && bind_capture_active(&d, &s, &ms)) cap_slot_was = s;
     if (g_cap_row && !bind_capture_active(&d, &s, &ms)) {
         g_cap_row = 0;
@@ -2308,7 +2340,7 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
     if (!game_options_input_hold() && !menu_size_list_up()) pc_cursor_options_tick(screen);  // (the list has the pointer)
     two_band_refresh(screen);
-    if ((g_cur_page == P_COOP_LOBBY || g_cur_page == P_COOP) && g_dirty.empty() && coop_menu_tick())
+    if (is_coop_page(g_cur_page) && g_dirty.empty() && coop_menu_tick())
         mark_all_rows(screen);  // refresh the lobby and the asynchronous split-screen action
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
@@ -2326,7 +2358,11 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
 extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
-    if (g_coop_from_title && (g_cur_page == P_COOP || g_cur_page == P_COOP_LOBBY)) {  // (the title's Co-op: closes)
+    if (is_coop_sub(g_cur_page)) {  // (a co-op sub-menu: back to the setup or the lobby, cursor on the button that opened it)
+        g_next_page = P_COOP;  // (rt_opt_rows turns it into the lobby while co-op runs)
+        g_reopen = g_switching = true;
+        g_coop_from_sub = true;
+    } else if (g_coop_from_title && (g_cur_page == P_COOP || g_cur_page == P_COOP_LOBBY)) {  // (the title's Co-op: closes)
         g_coop_from_title = false;
         g_reopen = g_switching = false;
     } else if (g_installed && g_cur_page != P_MAIN) {

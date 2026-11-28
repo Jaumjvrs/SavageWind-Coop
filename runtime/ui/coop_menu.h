@@ -9,7 +9,9 @@
 extern "C" {
 #endif
 
-enum { COOP_PAGE_SETUP, COOP_PAGE_LOBBY };
+// (coop-menu) SETUP / LOBBY are the two top levels; the others are their sub-menus (opened from a row, B comes back).
+// Split and Options hold both the setup's rows and the lobby's own (coop_menu_shown keeps the ones that fit the state).
+enum { COOP_PAGE_SETUP, COOP_PAGE_LOBBY, COOP_PAGE_ONLINE, COOP_PAGE_SPLIT, COOP_PAGE_OPTS, COOP_PAGE_DISH };
 enum { COOP_ROW_TOGGLE = 0, COOP_ROW_CHOICE = 1, COOP_ROW_BUTTON = 2 };  // (game_options.mm KIND_*)
 
 typedef struct {
@@ -20,7 +22,7 @@ typedef struct {
 } CoopMenuRow;
 
 // What A on a row asks of the Options screen
-enum { COOP_PRESS_NONE, COOP_PRESS_REDRAW, COOP_PRESS_REOPEN, COOP_PRESS_LOBBY, COOP_PRESS_SETUP };
+enum { COOP_PRESS_NONE, COOP_PRESS_REDRAW, COOP_PRESS_REOPEN, COOP_PRESS_LOBBY, COOP_PRESS_SETUP, COOP_PRESS_SUBMENU };
 
 int coop_menu_rows(const CoopMenuRow **rows);     // every row of both pages, in page order
 void coop_menu_setup(int max_choices);           // refresh the save list before building the setup page
@@ -32,7 +34,8 @@ void coop_menu_set(int id, int v);                // (the caller saves the setti
 const char *coop_menu_title(int id);              // a title made when shown (NULL: the row's own)
 const char *coop_menu_desc(int id);               // a description made when shown (NULL: the row's own)
 bool coop_menu_off(int id, int v);                // greyed: can't be used (button) / picked (choice value v)
-int coop_menu_press(int id);                      // A on a button row: COOP_PRESS_*
+int coop_menu_target(int id);                     // a COOP_PRESS_SUBMENU row: the COOP_PAGE_* it opens
+int coop_menu_press(int id);                     // A on a button row: COOP_PRESS_*
 bool coop_menu_lobby(void);                       // the network runs: Co-op shows the lobby
 bool coop_menu_tick(void);                        // (lobby open, each frame) true: time to redraw its rows
 const char *coop_menu_dish_notice(bool recent_only);

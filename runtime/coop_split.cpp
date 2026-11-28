@@ -1,5 +1,6 @@
 // Each player owns a process, SDL window and Vulkan surface. The Windows container only lays out the two HWNDs.
 #include "coop_split.h"
+#include "coop_split_hud.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,14 +35,34 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr wchar_t k_class[] = L"SavageWindCoopSplit";
-constexpr UINT k_focus_host = WM_APP + 1, k_focus_guest = WM_APP + 2, k_fullscreen = WM_APP + 3;
+constexpr UINT k_focus_next = WM_APP + 1, k_focus_guest = WM_APP + 2, k_fullscreen = WM_APP + 3;
 constexpr int k_remove = -1, k_busy = -2;
-std::atomic<int> g_request, g_pid, g_pad{-2};
+// (4-player split screen) panes: 0 is player 1 (the game that made the container), 1..3 the players it started.
+// Two players: halves (the chosen layout); three or four: quarters, player n in quarter n (left to right, top to
+// bottom). SAVAGEWIND_COOP_SPLIT4=0: one extra player only, as before.
+constexpr int k_slots = 4;
+struct Guest {
+    std::atomic<HANDLE> job;
+    HANDLE process, stop_event, data_owner;
+    ULONGLONG stop_deadline;
+    int pad;
+};
+Guest g_guests[k_slots];  // ([0]: player 1 itself, unused)
+std::atomic<int> g_request, g_pid, g_pad{-2}, g_count;
+std::atomic<int> g_panes;  // player 1: bit n while player n+1's game runs (bit 0 too then); also the container's
+                           // GWLP_USERDATA, which the guests read to find their pane
 std::atomic<bool> g_failed;
 std::atomic<bool> g_minimized;
-std::atomic<HANDLE> g_job;
-HANDLE g_guest_process, g_stop_event, g_data_owner;
-ULONGLONG g_stop_deadline;
+HANDLE g_stop_event;  // a guest: player 1 sets it to end this game
+int g_slot = 1;       // a guest: its pane
+// (split banner) with three players the empty quarter shows the start screen's picture: a small process of this
+// exe (SAVAGEWIND_COOP_SPLIT_BANNER=1) that draws only the boot picture and never loads the game.
+// SAVAGEWIND_COOP_SPLITBANNER=0: the quarter stays black.
+constexpr wchar_t k_banner_class[] = L"SavageWindCoopBanner";  // (not k_class: Ctrl+Tab and focus skip it)
+Guest g_banner;
+int g_banner_slot;     // player 1: the pane it fills (0: none)
+bool g_banner_broken;  // player 1: it failed once; not again this session
+bool banner_mode() { return getenv("SAVAGEWIND_COOP_SPLIT_BANNER") != nullptr; }
 
 HWND g_container, g_parent, g_child, g_host;
 WNDPROC g_sdl_host_proc;
@@ -63,6 +84,17 @@ bool env_off(const char *key) {
 
 bool is_guest() { return getenv("SAVAGEWIND_COOP_SPLIT_CHILD") != nullptr; }
 
+int max_guests() {
+    // (more than one extra player needs the shared window: the two-window fallback has only two halves)
+    return env_off("SAVAGEWIND_COOP_SPLIT4") || env_off("SAVAGEWIND_COOP_SPLITEMBED") ? 1 : k_slots - 1;
+}
+
+int free_slot() {
+    for (int i = 1; i < k_slots; i++)
+        if (!(g_panes & (1 << i))) return i;
+    return k_slots;
+}
+
 void push_quit() {
     SDL_Event e = {};
     e.type = SDL_EVENT_QUIT;
@@ -80,8 +112,18 @@ void release_mouse() {
 
 // SDL's Win32 focus check expects a foreground HWND. Windows makes our common
 // container the foreground window and assigns keyboard focus to its child.
-bool pane_message(HWND w, UINT msg, WPARAM wp, LRESULT *result) {
+bool pane_message(HWND w, UINT msg, WPARAM wp, LPARAM lp, LRESULT *result) {
     switch (msg) {
+    case WM_SETCURSOR:
+        // (2026-11-27) A guest's pane is our window class, whose class cursor is the arrow: each re-centring of the
+        // held mouse (coop_split_mouse) made Windows draw that arrow before SDL hid it again, a flicker in the middle
+        // of players 2-4's panes. While the game hides the pointer, the pane shows none.
+        if (LOWORD(lp) == HTCLIENT && (g_mouse_held || !SDL_CursorVisible())) {
+            SetCursor(nullptr);
+            *result = TRUE;
+            return true;
+        }
+        break;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN:
         SetFocus(w);
         break;
@@ -114,14 +156,24 @@ bool pane_message(HWND w, UINT msg, WPARAM wp, LRESULT *result) {
 
 LRESULT CALLBACK host_pane_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     LRESULT result;
-    if (pane_message(w, msg, wp, &result)) return result;
+    if (pane_message(w, msg, wp, lp, &result)) return result;
     return CallWindowProcW(g_sdl_host_proc, w, msg, wp, lp);
 }
 
-void place_half(HWND parent, HWND child, bool second, UINT flags) {
+// Puts a player's window in its pane of the container; panes: the container's GWLP_USERDATA (see g_panes)
+void place_pane(HWND parent, HWND child, int slot, UINT flags) {
     RECT r;
     if (!child || IsIconic(parent) || !GetClientRect(parent, &r) || r.right < 2 || r.bottom < 2) return;
-    if (g_layout == COOP_SPLIT_LEFT) {
+    int panes = (int)GetWindowLongPtrW(parent, GWLP_USERDATA) | 1 | 1 << slot, players = 0;
+    for (int i = 0; i < k_slots; i++) players += panes >> i & 1;
+    bool second = slot != 0;
+    if (players > 2) {
+        int w = r.right / 2, h = r.bottom / 2;
+        if (slot & 1) r.left = w;
+        else r.right = w;
+        if (slot & 2) r.top = h;
+        else r.bottom = h;
+    } else if (g_layout == COOP_SPLIT_LEFT) {
         if (second) r.left = r.right / 2;
         else r.right /= 2;
     } else {
@@ -163,12 +215,16 @@ LRESULT CALLBACK split_window_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         SetFocus(w);
         return 0;
     }
+    if (w == g_child && banner_mode()) {  // (the banner never takes the keyboard or the mouse)
+        if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (msg == WM_SETFOCUS) return 0;
+    }
     LRESULT result;
-    if (w == g_child && pane_message(w, msg, wp, &result)) return result;
+    if (w == g_child && !banner_mode() && pane_message(w, msg, wp, lp, &result)) return result;
     if (w == g_container) switch (msg) {
     case WM_SIZE:
         g_minimized = wp == SIZE_MINIMIZED;
-        if (wp != SIZE_MINIMIZED) place_half(w, g_host, false, 0);
+        if (wp != SIZE_MINIMIZED) place_pane(w, g_host, 0, 0);
         return 0;
     case WM_DPICHANGED:
         if (!g_fullscreen) {
@@ -178,9 +234,14 @@ LRESULT CALLBACK split_window_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_SETFOCUS:
-    case k_focus_host:
         if (g_host) SetFocus(g_host);
         return 0;
+    case k_focus_next: {  // Ctrl+Tab in the pane wp (0: player 1's): the next player's pane, after the last player 1's
+        HWND next = FindWindowExW(w, (HWND)wp, k_class, nullptr);
+        if (next) PostMessageW(next, k_focus_guest, 0, 0);
+        else if (g_host) SetFocus(g_host);
+        return 0;
+    }
     case k_fullscreen:
         g_settings.fullscreen = !g_settings.fullscreen;
         apply_fullscreen();
@@ -198,6 +259,8 @@ bool register_window_class() {
     cls.hIcon = LoadIconW(cls.hInstance, MAKEINTRESOURCEW(1));  // the exe's Savage Wind icon (taskbar, title bar)
     cls.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     cls.lpszClassName = k_class;
+    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    cls.lpszClassName = k_banner_class;
     return RegisterClassW(&cls) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
@@ -240,7 +303,7 @@ bool make_container(SDL_Window *window) {
     g_host = game;
     g_pane = window;
     g_sdl_host_proc = (WNDPROC)SetWindowLongPtrW(game, GWLP_WNDPROC, (LONG_PTR)host_pane_proc);
-    place_half(g_container, game, false, SWP_FRAMECHANGED);
+    place_pane(g_container, game, 0, SWP_FRAMECHANGED);
     ShowWindow(g_container, SW_SHOWNORMAL);
     ShowWindow(game, SW_SHOWNA);
     SetForegroundWindow(g_container);
@@ -320,17 +383,18 @@ void copy_once(const fs::path &src, const fs::path &dst, bool directory) {
     }
 }
 
-fs::path prepare_data() {
+fs::path prepare_data(int slot) {
     fs::path root(widen(rt_data_root()));
-    fs::path data = root / L"split-player2";
+    fs::path data = root / (L"split-player" + std::to_wstring(slot + 1));
     check_tree(data);
     fs::create_directory(data);
     // Two hosts sharing a data root must not launch guests that write the same save.
-    g_data_owner = CreateFileW((data / L"split-owner.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                              OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (g_data_owner == INVALID_HANDLE_VALUE) {
-        g_data_owner = nullptr;
-        throw std::runtime_error("Player 2's data folder is already in use or cannot be opened");
+    HANDLE &owner = g_guests[slot].data_owner;
+    owner = CreateFileW((data / L"split-owner.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                        OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (owner == INVALID_HANDLE_VALUE) {
+        owner = nullptr;
+        throw std::runtime_error("Player " + std::to_string(slot + 1) + "'s data folder is already in use or cannot be opened");
     }
     copy_once(fs::absolute(fs::path(widen(sp_session_save_dir()))), data / L"save", true);
     copy_once(fs::absolute(fs::path(widen(settings_file()))), data / L"savagewind.ini", false);
@@ -341,7 +405,26 @@ fs::path prepare_data() {
     return data;
 }
 
+// (split banner) its folder: the settings (graphics card, boot picture) and fonts of player 1, an empty save folder
+fs::path prepare_banner_data() {
+    fs::path root(widen(rt_data_root()));
+    fs::path data = root / L"split-banner";
+    check_tree(data);
+    fs::create_directories(data / L"save");
+    copy_once(fs::absolute(fs::path(widen(settings_file()))), data / L"savagewind.ini", false);
+    for (const auto &entry : fs::directory_iterator(root))
+        if (_wcsicmp(entry.path().extension().c_str(), L".ttf") == 0)
+            copy_once(entry.path(), data / entry.path().filename(), false);
+    return data;
+}
+
 using Env = std::vector<std::pair<std::wstring, std::wstring>>;
+
+void env_set(Env &env, const wchar_t *key, const std::wstring &value) {
+    for (auto &item : env)
+        if (!_wcsicmp(item.first.c_str(), key)) { item.second = value; return; }
+    env.emplace_back(key, value);
+}
 
 std::vector<wchar_t> child_environment(const Env &overrides) {
     std::vector<std::wstring> vars;
@@ -368,7 +451,9 @@ std::vector<wchar_t> child_environment(const Env &overrides) {
     return result;
 }
 
-std::wstring stop_event_name(DWORD host) { return L"Local\\SavageWindSplitStop-" + std::to_wstring(host); }
+std::wstring stop_event_name(DWORD host, int slot) {
+    return L"Local\\SavageWindSplitStop-" + std::to_wstring(host) + L"-" + std::to_wstring(slot);
+}
 
 std::wstring widen_utf8(const char *s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
@@ -386,11 +471,16 @@ int split_audio_mode() {
     return mode > SPLIT_AUDIO_OFF && mode < SPLIT_AUDIO_COUNT ? mode : SPLIT_AUDIO_OFF;
 }
 
-bool spawn_guest(const fs::path &data, int port, int pad, bool embed) {
+// banner: the split banner in pane slot (no game, no co-op, no sound, no controller)
+bool spawn_guest(const fs::path &data, int port, int pad, bool embed, int slot, bool banner = false) {
     const char *control = getenv("SAVAGEWIND_COOP_SPLIT_CONTROL");
     bool scratch = getenv("SAVAGEWIND_CONTROL") && control && *control;
     const wchar_t *half = g_layout == COOP_SPLIT_LEFT ? L"right" : L"bottom";
-    int audio = split_audio_mode();
+    // (4-player split screen) the sound choice is player 2's; players 3 and 4 play silently
+    int audio = slot == 1 ? split_audio_mode() : SPLIT_AUDIO_OFF;
+    std::wstring name = L"Player " + std::to_wstring(slot + 1);
+    // (dev) the scratch test control port of player n is SAVAGEWIND_COOP_SPLIT_CONTROL + n - 2
+    std::wstring control_port = scratch ? std::to_wstring(atoi(control) + slot - 1) : L"";
     Env env = {
         // (coop-splitaudio) player 2's sound: none, its own device, or shared speakers (quieter, no music, faded out
         // near player 1)
@@ -409,18 +499,31 @@ bool spawn_guest(const fs::path &data, int port, int pad, bool embed) {
         {L"SAVAGEWIND_SPLIT", half}, {L"SAVAGEWIND_PAD", std::to_wstring(pad)},
         {L"SAVAGEWIND_COOP_PORT", L""}, {L"SAVAGEWIND_COOP_BIND", L""},
         {L"SAVAGEWIND_COOP_PEER", L"127.0.0.1:" + std::to_wstring(port)},
-        {L"SAVAGEWIND_COOP_CODE", widen(coop_net_room_code())}, {L"SAVAGEWIND_COOP_NAME", L"Player 2"},
+        {L"SAVAGEWIND_COOP_CODE", widen(coop_net_room_code())}, {L"SAVAGEWIND_COOP_NAME", name},
         {L"SAVAGEWIND_LAUNCH_FLAGS_APPLIED", L""}, {L"SAVAGEWIND_REEXEC", L""},
-        {L"SAVAGEWIND_CONTROL", scratch ? widen(control) : L""},
+        {L"SAVAGEWIND_CONTROL", control_port},
         {L"SAVAGEWIND_COOP_SPLIT_CONTROL", L""},
+        {L"SAVAGEWIND_COOP_SPLIT_SLOT", std::to_wstring(slot)},
     };
+    if (banner) {
+        audio = SPLIT_AUDIO_OFF;
+        for (const wchar_t *key : {L"SAVAGEWIND_AUDIO_DEVICE", L"SAVAGEWIND_SPLIT_AUDIO", L"SAVAGEWIND_COOP_PEER",
+                                  L"SAVAGEWIND_COOP_CODE", L"SAVAGEWIND_COOP_NAME", L"SAVAGEWIND_CONTROL",
+                                  L"SAVAGEWIND_NO_BOOT_SPLASH"})
+            env_set(env, key, L"");
+        env_set(env, L"SAVAGEWIND_NO_AUDIO", L"1");
+        env_set(env, L"SAVAGEWIND_PAD", L"none");
+        env_set(env, L"SAVAGEWIND_COOP_SPLIT_BANNER", L"1");
+    } else {
+        env_set(env, L"SAVAGEWIND_COOP_SPLIT_BANNER", L"");
+    }
     if (audio == SPLIT_AUDIO_SHARED) {
         wchar_t gain[32];
         const char *base = getenv("SAVAGEWIND_AUDIO_GAIN");  // (a gain player 1 was started with applies to both)
         swprintf(gain, 32, L"%.3f", (base && *base ? atof(base) : 1.0) * SPLIT_SHARED_VOLUME);
         env.emplace_back(L"SAVAGEWIND_AUDIO_GAIN", gain);
     }
-    fprintf(stderr, "[split] Player 2 sound: %s%s%s\n",
+    if (!banner) fprintf(stderr, "[split] Player %d sound: %s%s%s\n", slot + 1,
             audio == SPLIT_AUDIO_SHARED ? "shared speakers" : audio == SPLIT_AUDIO_DEVICE ? "own device " : "off",
             audio == SPLIT_AUDIO_DEVICE ? "\"" : "",
             audio == SPLIT_AUDIO_DEVICE ? (std::string(g_settings.split_audio_device) + "\"").c_str() : "");
@@ -471,22 +574,117 @@ bool spawn_guest(const fs::path &data, int port, int pad, bool embed) {
         CloseHandle(job);
         return false;
     }
-    g_job = job;
     CloseHandle(process.hThread);
-    g_guest_process = process.hProcess;
-    fprintf(stderr, "[split] Player 2 PID %lu, %s, controller %d\n", process.dwProcessId, embed ? "embedded" : "two windows", pad);
+    if (banner) {
+        g_banner.job = job;
+        g_banner.process = process.hProcess;
+        fprintf(stderr, "[split] banner PID %lu in pane %d\n", process.dwProcessId, slot + 1);
+        return true;
+    }
+    g_guests[slot].job = job;
+    g_guests[slot].process = process.hProcess;
+    fprintf(stderr, "[split] Player %d PID %lu, %s, controller %d\n", slot + 1, process.dwProcessId,
+            embed ? "embedded" : "two windows", pad);
     g_pid = (int)process.dwProcessId;
     return true;
 }
 
+// Player 1: the container's panes after a player came or went; player 1's own pane follows at once, the others at
+// their next frame (coop_split_poll)
+void publish_panes() {
+    if (!g_container) return;
+    SetWindowLongPtrW(g_container, GWLP_USERDATA, g_panes.load() | (g_banner_slot ? 1 << g_banner_slot : 0));
+    place_pane(g_container, g_host, 0, 0);
+}
+
+void close_guest(Guest &g) {
+    if (HANDLE job = g.job.exchange(nullptr)) {
+        // Keep the container alive until the guest has stopped presenting. Closing
+        // the last job handle alone can race destruction of the guest's HWND.
+        if (TerminateJobObject(job, 0)) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info = {};
+            for (int i = 0; i < 200 && QueryInformationJobObject(job, JobObjectBasicAccountingInformation,
+                     &info, sizeof info, nullptr) && info.ActiveProcesses; i++) Sleep(5);
+        }
+        CloseHandle(job);
+    }
+}
+
+// (split banner) gone from its pane (a player takes the pane, or fewer than three play)
+void drop_banner() {
+    if (!g_banner_slot) return;
+    close_guest(g_banner);
+    if (g_banner.process) CloseHandle(g_banner.process), g_banner.process = nullptr;
+    g_banner_slot = 0;
+    publish_panes();
+}
+
+// (split banner) up in the empty quarter while exactly three play; SAVAGEWIND_COOP_SPLITBANNER=0: never
+void update_banner() {
+    if (g_banner_slot && WaitForSingleObject(g_banner.process, 0) == WAIT_OBJECT_0) {
+        fprintf(stderr, "[split] the banner ended by itself; no banner this session\n");
+        g_banner_broken = true;
+    }
+    int want = g_container && g_count == 2 && !g_banner_broken && !env_off("SAVAGEWIND_COOP_SPLITBANNER")
+                   ? free_slot() : 0;
+    if (want >= k_slots) want = 0;
+    if (g_banner_slot && want != g_banner_slot) drop_banner();
+    if (!want || g_banner_slot) return;
+    g_banner_slot = want;
+    publish_panes();
+    bool ok = false;
+    try {
+        ok = spawn_guest(prepare_banner_data(), 0, -1, true, want, true);
+    } catch (const std::exception &e) {
+        fprintf(stderr, "[split] banner: %s\n", e.what());
+    }
+    if (!ok) {
+        g_banner_broken = true;
+        g_banner_slot = 0;
+        publish_panes();
+    }
+}
+
+void release_slot(int slot) {
+    Guest &g = g_guests[slot];
+    for (HANDLE *h : {&g.process, &g.stop_event, &g.data_owner})
+        if (*h) CloseHandle(*h), *h = nullptr;
+    g.stop_deadline = 0;
+    g.pad = 0;
+    g_panes &= ~(1 << slot);
+    if (g_panes == 1) g_panes = 0;
+}
+
 bool start(SDL_Window *window, int layout, int pad) {
     if (g_game.empty()) return false;
-    const char *host_choice = getenv("SAVAGEWIND_PAD");
-    int host_pad = host_choice && !strcmp(host_choice, "none") ? -1 : host_choice ? atoi(host_choice) : 0;
-    if (host_pad < -1 || !host_pad || host_pad > 4) host_pad = pad == 1 ? -1 : 1;
-    if (host_pad == pad) {
-        fprintf(stderr, "[split] controller %d is already assigned to player 1\n", pad);
-        return false;
+    int slot = free_slot();
+    if (slot > max_guests()) return false;
+    bool first = !g_count;
+    int host_pad = g_pad;
+    if (first) {
+        const char *host_choice = getenv("SAVAGEWIND_PAD");
+        host_pad = host_choice && !strcmp(host_choice, "none") ? -1 : host_choice ? atoi(host_choice) : 0;
+        if (host_pad < -1 || !host_pad || host_pad > 4) host_pad = pad == 1 ? -1 : 1;
+        if (host_pad == pad) {
+            fprintf(stderr, "[split] controller %d is already assigned to player 1\n", pad);
+            return false;
+        }
+    } else {
+        // (4-player split screen) a controller already in use: the first free one instead
+        auto used = [&](int p) {
+            if (p == host_pad) return true;
+            for (int i = 1; i < k_slots; i++)
+                if (g_guests[i].process && g_guests[i].pad == p) return true;
+            return false;
+        };
+        int want = pad;
+        for (pad = want; pad <= 4 && used(pad); pad++) {}
+        if (pad > 4) for (pad = 1; pad < want && used(pad); pad++) {}
+        if (used(pad)) {
+            fprintf(stderr, "[split] no free controller for player %d\n", slot + 1);
+            return false;
+        }
+        if (pad != want) fprintf(stderr, "[split] controller %d is in use: player %d gets controller %d\n", want, slot + 1, pad);
     }
     bool started_room = false;
     bool launched = false;
@@ -507,20 +705,25 @@ bool start(SDL_Window *window, int layout, int pad) {
         }
         int port = coop_net_local_join_port();
         if (port) {
-            fs::path data = prepare_data();
-            g_layout = layout;
-            bool embed = !env_off("SAVAGEWIND_COOP_SPLITEMBED");
-            g_stop_event = CreateEventW(nullptr, TRUE, FALSE, stop_event_name(GetCurrentProcessId()).c_str());
-            if (!g_stop_event) {
-                fprintf(stderr, "[split] could not create Player 2's stop event (%lu)\n", GetLastError());
-            } else if (embed && !make_container(window)) {
+            fs::path data = prepare_data(slot);
+            if (first) g_layout = layout;
+            bool embed = first ? !env_off("SAVAGEWIND_COOP_SPLITEMBED") : g_container != nullptr;
+            HANDLE &stop = g_guests[slot].stop_event;
+            stop = CreateEventW(nullptr, TRUE, FALSE, stop_event_name(GetCurrentProcessId(), slot).c_str());
+            if (!stop) {
+                fprintf(stderr, "[split] could not create Player %d's stop event (%lu)\n", slot + 1, GetLastError());
+            } else if (embed && first && !make_container(window)) {
                 fprintf(stderr, "[split] could not create the split-screen container\n");
             } else {
-                launched = spawn_guest(data, port, pad, embed);
+                g_panes |= 1 | 1 << slot;
+                publish_panes();
+                launched = spawn_guest(data, port, pad, embed, slot);
                 if (launched) {
                     g_pad = host_pad;
-                    if (embed) winsize_apply(window);
-                    else {
+                    g_guests[slot].pad = pad;
+                    g_count++;
+                    if (first && embed) winsize_apply(window);
+                    else if (first) {
                         SDL_SetWindowFullscreen(window, false);
                         SDL_SyncWindow(window);
                         GetWindowPlacement(hwnd(window), &g_host_placement);
@@ -536,25 +739,33 @@ bool start(SDL_Window *window, int layout, int pad) {
         fprintf(stderr, "[split] %s\n", e.what());
     }
     if (!launched) {
-        if (g_container) restore_window(window);
-        if (g_stop_event) CloseHandle(g_stop_event), g_stop_event = nullptr;
-        if (g_data_owner) CloseHandle(g_data_owner), g_data_owner = nullptr;
-        if (started_room) coop_net_stop();
+        release_slot(slot);
+        if (first) {
+            if (g_container) restore_window(window);
+            if (started_room) coop_net_stop();
+        } else {
+            publish_panes();
+        }
     }
     return launched;
 }
 
-void finish(SDL_Window *window) {
-    coop_split_shutdown();
-    WaitForSingleObject(g_guest_process, 1000);
-    CloseHandle(g_guest_process);
-    CloseHandle(g_stop_event);
-    CloseHandle(g_data_owner);
-    g_guest_process = g_stop_event = nullptr;
-    g_data_owner = nullptr;
-    g_stop_deadline = 0;
+// A player's game has ended (or is ended now): its pane goes; with the last one, player 1's window is restored
+void finish(SDL_Window *window, int slot) {
+    close_guest(g_guests[slot]);
+    WaitForSingleObject(g_guests[slot].process, 1000);
+    release_slot(slot);
+    g_count--;
     g_pid = 0;
+    for (int i = 1; i < k_slots; i++)
+        if (g_guests[i].process) g_pid = (int)GetProcessId(g_guests[i].process);
+    if (g_count > 0) {
+        publish_panes();
+        return;
+    }
+    g_count = 0;
     g_pad = -2;
+    drop_banner();
     restore_window(window);
 }
 
@@ -568,8 +779,8 @@ bool coop_split_available() {
 bool coop_split_request(bool add, int layout, int pad) {
     if (!coop_split_available()) return false;
     if (add && (layout < COOP_SPLIT_TOP || layout > COOP_SPLIT_LEFT || pad < 1 || pad > 4 ||
-                coop_split_pid() || (coop_net_on() && !coop_net_local_join_port()))) return false;
-    if (!add && !coop_split_pid()) return false;
+                g_count >= max_guests() || (coop_net_on() && !coop_net_local_join_port()))) return false;
+    if (!add && !g_count) return false;
     int idle = 0;
     if (!g_request.compare_exchange_strong(idle, add ? pad + 4 * layout : k_remove)) return false;
     g_failed = false;
@@ -577,16 +788,62 @@ bool coop_split_request(bool add, int layout, int pad) {
 }
 
 int coop_split_pid() { return g_pid; }
+int coop_split_count() { return g_count; }
+int coop_split_max() { return max_guests(); }
+int coop_split_next_player() { return free_slot() + 1; }
+int coop_split_last_player() {
+    int panes = g_panes;
+    for (int i = k_slots - 1; i > 0; i--)
+        if (panes & (1 << i)) return i + 1;
+    return 0;
+}
 bool coop_split_pending() { return g_request != 0; }
 bool coop_split_failed() { return g_failed; }
 int coop_split_host_pad() { return g_pad; }
+
+// (split map) the block the games of this window share (coop_split_hud.h): player 1 makes it with its first extra
+// player and keeps it while it runs; the others open it (again at most once a second while it isn't there)
+SplitHud *coop_split_hud() {
+    static SplitHud *hud;
+    static ULONGLONG tried;
+    if (hud) return hud;
+    bool guest = is_guest();
+    if (!guest && !g_count) return nullptr;
+    ULONGLONG now = GetTickCount64();
+    if (tried && now - tried < 1000) return nullptr;
+    tried = now;
+    DWORD host = guest ? strtoul(getenv("SAVAGEWIND_COOP_SPLIT_CHILD"), nullptr, 10) : GetCurrentProcessId();
+    std::wstring name = L"Local\SavageWindSplitHud-" + std::to_wstring(host);
+    HANDLE map = guest ? OpenFileMappingW(FILE_MAP_ALL_ACCESS, false, name.c_str())
+                       : CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SplitHud), name.c_str());
+    if (!map) return nullptr;
+    auto *h = (SplitHud *)MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SplitHud));
+    if (!h) {
+        CloseHandle(map);
+        return nullptr;
+    }
+    if (!guest) {  // (fresh pages are zero)
+        h->version = SPLIT_HUD_VERSION;
+        h->magic = SPLIT_HUD_MAGIC;
+    } else if (h->magic != SPLIT_HUD_MAGIC || h->version != SPLIT_HUD_VERSION) {
+        UnmapViewOfFile(h);
+        CloseHandle(map);
+        return nullptr;
+    }
+    return hud = h;  // (the mapping stays open until the process ends)
+}
+int coop_split_hud_slot() { return banner_mode() ? -1 : is_guest() ? g_slot : 0; }
 
 void coop_split_startup() {
     split_audio_device();  // (read once here, before the sound threads ask)
     const char *host = getenv("SAVAGEWIND_COOP_SPLIT_CHILD");
     if (!host) return;
     if (!freopen("savagewind.log", "a", stderr)) exit(1);
-    g_stop_event = OpenEventW(SYNCHRONIZE, false, stop_event_name(strtoul(host, nullptr, 10)).c_str());
+    const char *slot = getenv("SAVAGEWIND_COOP_SPLIT_SLOT");
+    g_slot = slot ? atoi(slot) : 1;
+    if (g_slot < 1 || g_slot >= k_slots) exit(1);
+    if (banner_mode()) return;  // (player 1 ends it with its job)
+    g_stop_event = OpenEventW(SYNCHRONIZE, false, stop_event_name(strtoul(host, nullptr, 10), g_slot).c_str());
     if (!g_stop_event) exit(1);
 }
 
@@ -610,13 +867,14 @@ void *coop_split_guest_window() {
     }
     const char *half = getenv("SAVAGEWIND_SPLIT");
     g_layout = half && !strcmp(half, "right") ? COOP_SPLIT_LEFT : COOP_SPLIT_TOP;
-    g_child = CreateWindowExW(WS_EX_TOOLWINDOW, k_class, L"Savage Wind", WS_CHILD | WS_CLIPSIBLINGS,
+    g_child = CreateWindowExW(WS_EX_TOOLWINDOW | (banner_mode() ? WS_EX_NOACTIVATE : 0),
+                              banner_mode() ? k_banner_class : k_class, L"Savage Wind", WS_CHILD | WS_CLIPSIBLINGS,
                               0, 0, 1, 1, g_parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_child) {
         fprintf(stderr, "[split] FATAL: could not create child window (%lu)\n", GetLastError());
         exit(1);
     }
-    place_half(g_parent, g_child, true, 0);
+    place_pane(g_parent, g_child, g_slot, 0);
     return g_child;
 }
 
@@ -674,40 +932,50 @@ const char *coop_split_host_half() { return g_fallback; }
 
 void coop_split_poll(SDL_Window *window) {
     if (is_guest()) {
-        if (WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0) exit(0);
+        if (g_stop_event && WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0) exit(0);
         if (g_child) {
             g_minimized = IsIconic(g_parent) != 0;
             static RECT last;
+            static LONG_PTR last_panes;
             RECT r;
-            if (GetClientRect(g_parent, &r) && !EqualRect(&r, &last)) {
-                place_half(g_parent, g_child, true, 0);
+            LONG_PTR panes = GetWindowLongPtrW(g_parent, GWLP_USERDATA);
+            if (GetClientRect(g_parent, &r) && (!EqualRect(&r, &last) || panes != last_panes)) {
+                place_pane(g_parent, g_child, g_slot, 0);
                 last = r;
+                last_panes = panes;
             }
         }
         return;
     }
-    if (g_guest_process) {
-        if (WaitForSingleObject(g_guest_process, 0) == WAIT_OBJECT_0 ||
-            (g_stop_deadline && GetTickCount64() >= g_stop_deadline)) {
+    for (int i = 1; i < k_slots; i++) {
+        Guest &g = g_guests[i];
+        if (!g.process) continue;
+        if (WaitForSingleObject(g.process, 0) == WAIT_OBJECT_0 ||
+            (g.stop_deadline && GetTickCount64() >= g.stop_deadline)) {
             DWORD code = 0;
-            GetExitCodeProcess(g_guest_process, &code);
-            if (!g_stop_deadline && code) {
+            GetExitCodeProcess(g.process, &code);
+            if (!g.stop_deadline && code) {
                 g_failed = true;
-                fprintf(stderr, "[split] player 2 exited with code %lu\n", code);
+                fprintf(stderr, "[split] player %d exited with code %lu\n", i + 1, code);
             }
-            finish(window);
-            if (g_request == k_busy) g_request = 0;
+            bool removed = g.stop_deadline != 0;
+            finish(window, i);
+            if (removed && g_request == k_busy) g_request = 0;
         }
-        else if (!coop_net_on() && !g_stop_deadline) finish(window);
+        else if (!coop_net_on() && !g.stop_deadline) finish(window, i);
     }
+    update_banner();
     int request = g_request.load();
     if (!request || request == k_busy) return;
     g_request = k_busy;
     if (request > 0) {
+        drop_banner();  // (the new player may take its pane; it comes back below while three play)
         g_failed = !start(window, (request - 1) / 4, (request - 1) % 4 + 1);
-    } else if (g_guest_process) {
-        SetEvent(g_stop_event);
-        g_stop_deadline = GetTickCount64() + 3000;
+        update_banner();
+    } else if (int last = coop_split_last_player(); last && g_guests[last - 1].process) {
+        // Remove: the last player added (the highest number) leaves
+        SetEvent(g_guests[last - 1].stop_event);
+        g_guests[last - 1].stop_deadline = GetTickCount64() + 3000;
         return;
     }
     g_request = 0;
@@ -726,11 +994,8 @@ bool coop_split_event(SDL_Window *, const SDL_Event *e) {
     }
     if (e->type != SDL_EVENT_KEY_DOWN || e->key.repeat || input_user_blocked(e)) return false;
     if (e->key.scancode == SDL_SCANCODE_TAB && (e->key.mod & SDL_KMOD_CTRL)) {
-        if (g_child) PostMessageW(g_parent, k_focus_host, 0, 0);
-        else {
-            HWND child = FindWindowExW(g_container, nullptr, k_class, nullptr);
-            if (child) PostMessageW(child, k_focus_guest, 0, 0);
-        }
+        if (g_child) PostMessageW(g_parent, k_focus_next, (WPARAM)g_child, 0);
+        else if (g_container) PostMessageW(g_container, k_focus_next, 0, 0);
         return true;
     }
     if (g_child && (e->key.scancode == SDL_SCANCODE_F11 ||
@@ -743,22 +1008,15 @@ bool coop_split_event(SDL_Window *, const SDL_Event *e) {
 
 void coop_split_shutdown() {
     // Also called by the Vulkan exit handler, which can run on the control thread.
-    if (HANDLE job = g_job.exchange(nullptr)) {
-        // Keep the container alive until the guest has stopped presenting. Closing
-        // the last job handle alone can race destruction of the guest's HWND.
-        if (TerminateJobObject(job, 0)) {
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info = {};
-            for (int i = 0; i < 200 && QueryInformationJobObject(job, JobObjectBasicAccountingInformation,
-                     &info, sizeof info, nullptr) && info.ActiveProcesses; i++) Sleep(5);
-        }
-        CloseHandle(job);
-    }
+    close_guest(g_banner);
+    for (int i = 1; i < k_slots; i++) close_guest(g_guests[i]);
 }
 
 void coop_split_reboot(SDL_Window *window) {
     if (!is_guest()) {
         g_request = 0;
-        if (g_guest_process) finish(window);
+        for (int i = 1; i < k_slots; i++)
+            if (g_guests[i].process) finish(window, i);
     }
 }
 
@@ -784,7 +1042,10 @@ bool split_audio_foreground() {
     return parent && GetForegroundWindow() == parent;
 }
 
+#elif defined(__linux__)
+#include "coop_split_linux.inc"  // (X11 / XWayland: the same design, see there)
 #else
+#include "split_audio.h"
 const char *split_audio_device() {
     const char *v = getenv("SAVAGEWIND_AUDIO_DEVICE");
     return v && *v ? v : nullptr;
@@ -793,9 +1054,15 @@ bool split_audio_foreground() { return false; }
 bool coop_split_available() { return false; }
 bool coop_split_request(bool, int, int) { return false; }
 int coop_split_pid() { return 0; }
+int coop_split_count() { return 0; }
+int coop_split_max() { return 0; }
+int coop_split_next_player() { return 2; }
+int coop_split_last_player() { return 0; }
 bool coop_split_pending() { return false; }
 bool coop_split_failed() { return false; }
 int coop_split_host_pad() { return -2; }
+SplitHud *coop_split_hud() { return nullptr; }
+int coop_split_hud_slot() { return -1; }
 void coop_split_startup() {}
 void coop_split_game_path(const char *) {}
 void *coop_split_guest_window() { return nullptr; }

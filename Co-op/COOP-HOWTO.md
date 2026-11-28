@@ -28,6 +28,12 @@ new version; when everything works, you can delete the old `coop-dev` folder.
 
 Your normal save is never changed: co-op plays on its own copy.
 
+## Updates
+
+When you start `Savage Wind Co-op.exe`, it checks GitHub for a newer release and asks if you want to update (keeping
+your saves and settings). If you are offline or GitHub cannot be reached, the game starts normally. To turn update
+checks off, set the environment variable `SAVAGEWIND_COOP_UPDATE=0` or add `enabled = 0` to `Co-op\local\updater.ini`.
+
 ## Hosting online
 
 The host's PC must be reachable from the internet on **UDP port 47000** (only this port).
@@ -63,6 +69,12 @@ Both games share one window. Player 2 loads a save in their half (their own copy
   output, e.g. headphones, chosen in the next row), or **shared speakers** (player 2's game plays quieter, without
   music, and goes silent while the two of you are close together). A change applies the next time you add player 2.
 - Two games at once need a strong PC: lower the graphics settings in each half if it stutters.
+- **Up to four players:** after player 2, pick the next player's controller and press **Add player 3**, then
+  **Add player 4**. With three or four players each game gets a quarter of the window (player 1 top left); with three, the
+  fourth quarter shows a map with everyone's dot and name, and each player's hearts and stamina
+  (and "In a shrine" when someone is in one), with the map's stamps and pins. The map zooms out as you spread out; **Map zoom (3 players)** (Near / Normal / Far) sets
+  how close it gets. Players 3 and 4 play without sound. **Remove a player** ends the last one added. Each extra game is a full copy of the game:
+  four at once need a very strong PC (lots of memory and a fast processor); use the Potato graphics preset in each.
 
 ## What is shared
 
@@ -70,7 +82,7 @@ Each player plays their own copy of the game; the mod keeps the important parts 
 
 - Each other's Link (gear, animations, riding), enemies placed on the map (the nearer player's game runs them), time
   of day and weather, chests and items picked up near each other, physics objects and puzzles in shrines and nearby
-  in the open world, switches, doors, Divine Beast and shrine progress, map pins, cooked dishes you hand over.
+  in the open world, switches, doors, Divine Beast and shrine progress, map pins and stamps (Options > Co-op > Shared map markers: Off / Pins only / All), cooked dishes you hand over.
 - Shrines and towers: when one of you opens a shrine, it opens for a partner nearby. Each rides the elevator alone,
   or both together when both stand on it.
 
@@ -88,6 +100,9 @@ Each player plays their own copy of the game; the mod keeps the important parts 
 Every co-op feature can be turned off with an environment variable `SAVAGEWIND_COOP_<NAME>=0` set before the game
 starts (for example `SAVAGEWIND_COOP_SPLITAUDIO=0`). Players normally never need these; the names are in the
 source code (`runtime/coop`).
+
+Enemy life: enemies have the game's normal life by default. For a harder game with more players, the host can give
+them more life for each extra player in Options > Co-op > "Enemy life"; the others use the host's choice.
 
 ## Problems
 

@@ -11,6 +11,8 @@ static void cmd_coop(int argc, char **argv, ControlReply *r) {
     if (argc >= 2 && !strcmp(argv[1], "split")) {
         if (argc == 3 && !strcmp(argv[2], "status")) {
             control_field_int(r, "pid", coop_split_pid());
+            control_field_int(r, "count", coop_split_count());  // (4-player split screen) players started
+            control_field_int(r, "last", coop_split_last_player());
             control_field_int(r, "pending", coop_split_pending());
             control_field_int(r, "failed", coop_split_failed());
             control_field_int(r, "audio", g_settings.split_audio);
@@ -216,6 +218,15 @@ static void cmd_coop(int argc, char **argv, ControlReply *r) {
         devcall.fn = fn;
         devcall.pending = 1;
         control_field_str(r, "state", "queued (see the log: [coop] call ...)");
+        return;
+    }
+    if (argc == 2 && !strcmp(argv[1], "pa")) {  // coop pa (dev): PlayerInfo and the player actor, for `coop watch`
+        uint64_t pinfo = g_site.player_info ? LD64(g_site.player_info) : 0;
+        char buf[64];
+        snprintf(buf, sizeof buf, "%llx", (unsigned long long)pinfo);
+        control_field_str(r, "pinfo", buf);
+        snprintf(buf, sizeof buf, "%llx", (unsigned long long)(pinfo ? LD64(pinfo + 0x60) : 0));
+        control_field_str(r, "pa", buf);
         return;
     }
     if ((argc == 3 || argc == 4) && !strcmp(argv[1], "watch")) {  // coop watch <addr hex> <len> | off: dev

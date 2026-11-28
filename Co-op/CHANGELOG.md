@@ -1,5 +1,30 @@
 # Savage Wind Co-op - changelog
 
+## 0.2.0 (2026-11-27)
+
+Co-op protocol 101: everyone needs this version (it doesn't connect to 0.1.0).
+
+- **Optional tougher enemies:** the host can give enemies more life for each extra player under Options > Co-op >
+  "Enemy life" (Normal, +25% ... +200% per extra player), also while playing; everyone uses the host's choice.
+  The default is Normal: the game's own life.
+- **Split screen for up to 4 players** on one PC: Options > Co-op > Add player 3 / Add player 4. Three or four players
+  get a quarter of the window each; each player uses their own controller (a controller already in use is skipped).
+  Players 3 and 4 have no sound. "Remove a player" ends the last one added. Needs a strong PC.
+
+- **Split-screen map:** with three players the empty quarter shows a map of everyone, with the game's own pins and
+  your shared markers. Regions whose Sheikah Tower nobody has activated yet look unrevealed, as in the game.
+- **Tidier Co-op menu:** Online, Split screen and Co-op options (and Give a dish in the lobby) are now sub-menus.
+- **Updates:** the launcher checks for a new version when it starts and asks before updating (see COOP-HOWTO).
+  From this version on you don't need to download new versions by hand.
+- **Linux (experimental, help wanted):** a ready-made x86-64 package (or build from source) for online co-op and
+  split screen (split screen uses X11; on Wayland desktops and the Steam Deck it runs through XWayland). I don't have
+  a Linux system, so this was only tested in software-rendered Linux containers on Windows, never on a real Linux PC
+  or a Steam Deck.
+  Expect rough edges, and any feedback is appreciated: please open an issue on GitHub with what worked and what
+  didn't (your distro, desktop and GPU help a lot).
+- Fixes: Stalkoblin heads stay in step between players; no flickering mouse cursor in other players' panes.
+- Privacy: the co-op log now hides the second half of IP addresses (`203.0.x.x`).
+
 ## 0.1.0 - first public release (2026-11-26)
 
 

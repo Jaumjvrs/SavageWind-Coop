@@ -1423,6 +1423,8 @@ extern "C" void boot_splash_open(void) {
 }
 
 extern "C" bool boot_splash_active(void) { return g_boot_ctx != NULL; }
+// (runtime/ui/coop_banner.mm: its map pictures are made in this context, as splash_load's are)
+extern "C" void *boot_splash_context(void) { return g_boot_ctx; }
 
 // One picture into the window image vk_frame_begin began (cmd: vk_frame_cmd), over what is there at `alpha` (1: all
 // of it; less while it fades into the game's title screen)
@@ -1442,14 +1444,18 @@ extern "C" void boot_splash_draw(void *cmd, uint32_t w, uint32_t h, float alpha)
     float s = ds.y / 720.0f;  // (the start screen's layout scale)
     io.FontGlobalScale = s * 0.5f;
     ImDrawList *bg = ImGui::GetBackgroundDrawList();
-    splash_draw(bg, ds, (float)((now - g_boot_t0) / 1e9));
-    left_shade(bg, ds);
-    // the name where the start screen has it, gold to orange, shadowed
-    ImGui::PushFont(g_boot_font);
-    float fs = ImGui::GetFontSize();
-    ImGui::PopFont();
-    text_fx(bg, g_boot_font, fs, ImVec2(90 * s, 120 * s), IM_COL32(255, 232, 120, 255), IM_COL32(255, 138, 48, 255),
-            "Savage Wind", 3 * s);
+    // (split banner: the players' map once their games report, runtime/ui/coop_banner.mm)
+    extern bool coop_banner_draw(ImDrawList *dl, ImVec2 ds, float s, ImFont *font, float dt);
+    if (!coop_banner_draw(bg, ds, s, g_boot_font, io.DeltaTime)) {
+        splash_draw(bg, ds, (float)((now - g_boot_t0) / 1e9));
+        left_shade(bg, ds);
+        // the name where the start screen has it, gold to orange, shadowed
+        ImGui::PushFont(g_boot_font);
+        float fs = ImGui::GetFontSize();
+        ImGui::PopFont();
+        text_fx(bg, g_boot_font, fs, ImVec2(90 * s, 120 * s), IM_COL32(255, 232, 120, 255), IM_COL32(255, 138, 48, 255),
+                "Savage Wind", 3 * s);
+    }
     if (alpha < 1) {  // (all of it at once: every vertex's alpha)
         int a = (int)(alpha * 256);
         for (ImDrawVert &v : bg->VtxBuffer) {

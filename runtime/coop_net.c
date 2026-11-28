@@ -40,7 +40,7 @@ typedef int CoopSocket;
 #include "rt.h"
 
 #define COOP_MAGIC 0x4f435753u  // "SWCO"
-#define COOP_VERSION 100 // 4: session identity and reciprocal acknowledgement; 5: enemy positions; 6: enemy AS; 7: body pos+rot;
+#define COOP_VERSION 101 // 4: session identity and reciprocal acknowledgement; 5: enemy positions; 6: enemy AS; 7: body pos+rot;
                         // 8: sword attack anims; 9: enemy ownership flags; 10: hour of day;
                         // 11: weapon name in the state packet; 12: run-time enemies (names), reliable events;
                         // 13: world events carry their area; 14: shared physics objects (branch coop) / the avatar's
@@ -162,6 +162,8 @@ typedef int CoopSocket;
                         // 100: (public 0.1.0, security review 3) the room-code key is stretched (2^20 SipHash rounds): a
                         //      captured datagram no longer lets someone guess the 8-letter code offline in hours;
                         //      same datagram sizes (a 99 peer just looks like a wrong code)
+                        // 101: (ENEMYHP) the host's name list carries its enemy life percent per extra player (the
+                        //      old pad2 field; same datagram sizes); guests use the host's
 #define SEND_INTERVAL_MS 50
 
 typedef struct {
@@ -381,7 +383,8 @@ typedef struct {
     uint64_t t_ns;          // the sender's clock as it sent this
     uint64_t echo_t_ns;     // the receiver's t_ns heard last (0: none)
     uint32_t echo_hold_us;  // how long the sender held that one before this send
-    uint32_t pad2;
+    uint16_t enemy_hp;      // (101, ENEMYHP) host: its enemy life percent per extra player + 1 (1: off, <= 401); guest: 0
+    uint16_t pad2;
     CoopNameEntry e[COOP_MAX_PLAYERS];
 } CoopNamePacket;
 _Static_assert(sizeof(CoopNameEntry) == 28 && sizeof(CoopNamePacket) == 48 + 28 * COOP_MAX_PLAYERS, "co-op name wire layout");
@@ -492,6 +495,16 @@ static int tag_check(const unsigned char *w, int n) {
     return memcmp(t, w + n - COOP_TAG, 8) ? -1 : n - COOP_TAG;
 }
 static uint32_t code_rejected;  // (tests, log)
+// Logs are shared when asking for help: an address is written with its second half hidden ("203.0.x.x").
+static const char *ip_masked(const struct in_addr *a, char out[INET_ADDRSTRLEN]) {
+    char ip[INET_ADDRSTRLEN] = "";
+    inet_ntop(AF_INET, (void *)a, ip, sizeof ip);
+    char *dot = strchr(ip, '.');
+    if (dot) dot = strchr(dot + 1, '.');
+    if (!dot) return strcpy(out, "?");
+    snprintf(out, INET_ADDRSTRLEN, "%.*s.x.x", (int)(dot - ip), ip);
+    return out;
+}
 _Static_assert(MAX_DATAGRAM + COOP_TAG <= 2048, "coop_sendto's buffer holds the largest datagram and its tag");
 typedef struct Retired { uint64_t session; struct Retired *next; } Retired;
 static Retired *retired; // process lifetime: never accept delayed packets from a replaced session
@@ -616,6 +629,8 @@ static int pings[COOP_MAX_PLAYERS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 static uint64_t name_t[COOP_MAX_PLAYERS], name_t_at[COOP_MAX_PLAYERS], name_changed_ns[COOP_MAX_PLAYERS];
 static char local_name[COOP_NAME_LEN];
 static uint8_t tints[COOP_MAX_PLAYERS], local_tint;  // (65) tunic colours by player id, ours
+// (101, ENEMYHP) enemy life percent per extra player: ours (a host sends it), the host's (a guest; -1 not heard yet)
+static int local_enemy_hp = 0, host_enemy_hp = -1;
 static void view_reset(int pid) {
     if (pid < 0 || pid >= COOP_MAX_PLAYERS) return;
     memset(&views[pid], 0, sizeof views[pid]);
@@ -2206,8 +2221,8 @@ static void *net_thread(void *arg) {
                     uint64_t t = plat_now_ns();
                     if (!said_ns || t - said_ns > 10000000000ull) {
                         said_ns = t;
-                        char ip[INET_ADDRSTRLEN] = "?";
-                        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+                        char ip[INET_ADDRSTRLEN];
+                        ip_masked(&from.sin_addr, ip);
                         LOG("[coop] ignored messages from %s:%u: not the same join code (both players must type the "
                             "same code, or both none) (%u so far)\n", ip, (unsigned)ntohs(from.sin_port), code_rejected);
                     }
@@ -2377,7 +2392,7 @@ static int host_admit(const struct sockaddr_in *from, const CoopPacket *p, uint6
         if (pid < 0) {
             static uint64_t said_ns;
             if (!said_ns || now - said_ns > 10000000000ull)
-                said_ns = now, LOG("[coop] %s:%d wants to join: already %d players, no room\n", inet_ntoa(from->sin_addr),
+                said_ns = now, LOG("[coop] %s:%d wants to join: already %d players, no room\n", ip_masked(&from->sin_addr, (char[INET_ADDRSTRLEN]){0}),
                                    ntohs(from->sin_port), COOP_MAX_PLAYERS);
             return -1;
         }
@@ -2385,7 +2400,7 @@ static int host_admit(const struct sockaddr_in *from, const CoopPacket *p, uint6
         conn[pid].restarted_ns = 0;
         view_reset(pid);
         link_reset(pid), names_forget(pid);  // (58: a new guest's world data starts empty)
-        LOG("[coop] player %d joined from %s:%d\n", pid, inet_ntoa(from->sin_addr), ntohs(from->sin_port));
+        LOG("[coop] player %d joined from %s:%d\n", pid, ip_masked(&from->sin_addr, (char[INET_ADDRSTRLEN]){0}), ntohs(from->sin_port));
     } else if (conn[pid].session != session) {  // (the guest restarted: same address, new session)
         if (conn[pid].restarted_ns && now - conn[pid].restarted_ns < 2000000000ull) return -1;
         retire(conn[pid].session);
@@ -2393,7 +2408,7 @@ static int host_admit(const struct sockaddr_in *from, const CoopPacket *p, uint6
         view_reset(pid);
         if (pid == partner_pid) peer_session = session;
         if (link_world(pid)) link_new_session(pid);  // (58: two players: world_reset, as before)
-        LOG("[coop] peer %s:%d new session (player %d)\n", inet_ntoa(from->sin_addr), ntohs(from->sin_port), pid);
+        LOG("[coop] peer %s:%d new session (player %d)\n", ip_masked(&from->sin_addr, (char[INET_ADDRSTRLEN]){0}), ntohs(from->sin_port), pid);
     }
     if (!conn_recent(pid, now) || !views[pid].at_ns || (int32_t)(p->seq - views[pid].seq) > 0)
         conn[pid].last_ns = now;
@@ -2486,7 +2501,7 @@ void coop_name_clean(const char *name, char out[COOP_NAME_LEN]) {
 static bool name_text_ok(const char *s) { return coop_name_ok(s); }
 static bool coop_name_packet_ok(const CoopNamePacket *p) {
     if (p->magic != COOP_NAME_MAGIC || p->version != COOP_VERSION || p->count > COOP_MAX_PLAYERS || !p->session ||
-        p->pad[0] || p->pad[1] || p->pad2)
+        p->pad[0] || p->pad[1] || p->pad2 || p->enemy_hp > COOP_ENEMY_HP_MAX + 1)
         return false;
     for (int i = 0; i < p->count; i++) {
         const CoopNameEntry *e = &p->e[i];
@@ -2533,6 +2548,10 @@ static void take_names(const CoopNamePacket *p, const struct sockaddr_in *from) 
     int r = rtt_ms(p, now);
     if (r >= 0) pings[0] = r;
     name_t[0] = p->t_ns, name_t_at[0] = now;
+    if (p->enemy_hp && host_enemy_hp != p->enemy_hp - 1) {
+        host_enemy_hp = p->enemy_hp - 1;
+        LOG("[coop] the host's enemy life: +%d%% per extra player\n", host_enemy_hp);
+    }
     for (int i = 0; i < p->count; i++) {
         const CoopNameEntry *e = &p->e[i];
         if (e->pid >= COOP_MAX_PLAYERS || e->pid == my_id) continue;
@@ -2553,6 +2572,7 @@ static void send_names(uint64_t now) {
     CoopNamePacket b = {0};
     b.magic = COOP_NAME_MAGIC, b.version = COOP_VERSION, b.session = local_session, b.t_ns = now;
     if (host_mode) {
+        b.enemy_hp = (uint16_t)(local_enemy_hp + 1);
         b.e[b.count].pid = 0, b.e[b.count].ping_ms = 0, b.e[b.count].tint = local_tint;
         memcpy(b.e[b.count].name, local_name, COOP_NAME_LEN), b.count++;
         for (int g = 1; g < COOP_MAX_PLAYERS; g++)
@@ -2595,6 +2615,17 @@ void coop_net_set_tint(int tint) {
     pthread_mutex_lock(&lock);
     local_tint = (uint8_t)(tint > 0 && tint < COOP_TINT_COUNT ? tint : 0);
     pthread_mutex_unlock(&lock);
+}
+void coop_net_set_enemy_hp(int per) {
+    pthread_mutex_lock(&lock);
+    local_enemy_hp = per < 0 ? 0 : per > COOP_ENEMY_HP_MAX ? COOP_ENEMY_HP_MAX : per;
+    pthread_mutex_unlock(&lock);
+}
+int coop_net_enemy_hp(void) {
+    pthread_mutex_lock(&lock);
+    int v = running && !host_mode ? host_enemy_hp : local_enemy_hp;
+    pthread_mutex_unlock(&lock);
+    return v;
 }
 int coop_net_player_tint(int pid) {
     if (pid < 0 || pid >= COOP_MAX_PLAYERS) return 0;
@@ -2652,8 +2683,8 @@ static void handle_datagram(const unsigned char *wire, int n, struct sockaddr_in
         uint64_t now = plat_now_ns();
         if (!said_ns || now - said_ns > 10000000000ull) {
             said_ns = now;
-            char ip[INET_ADDRSTRLEN] = "?";
-            inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+            char ip[INET_ADDRSTRLEN];
+            ip_masked(&from.sin_addr, ip);
             LOG("[coop] %s:%u runs co-op protocol %u, this build has %u: both PCs need the same co-op build "
                 "(send the new SavageWind-Coop.zip and run Co-op Setup.bat again)\n",
                 ip, (unsigned)ntohs(from.sin_port), (unsigned)wire[4], (unsigned)COOP_VERSION);
@@ -2793,7 +2824,7 @@ static void handle_datagram(const unsigned char *wire, int n, struct sockaddr_in
                 for (int i = 0; i < COOP_MAX_PLAYERS; i++) view_reset(i);
                 world_reset();
                 my_id = -1, players_mask = 0;
-                LOG("[coop] peer %s:%d new session\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+                LOG("[coop] peer %s:%d new session\n", ip_masked(&from.sin_addr, (char[INET_ADDRSTRLEN]){0}), ntohs(from.sin_port));
             }
             if (p.session == peer_session) {
                 if (p.origin == 0) {
@@ -3161,7 +3192,7 @@ bool coop_net_start(const CoopNetConfig *cfg) {
         peer.sin_family = AF_INET;
         peer.sin_port = htons((uint16_t)pport);
         if (!resolve_v4(host, &peer.sin_addr)) {
-            LOG("[coop] SAVAGEWIND_COOP_PEER: \"%s\" is not an IPv4 address\n", host);
+            LOG("[coop] SAVAGEWIND_COOP_PEER is not an IPv4 address\n");
             snprintf(start_error, sizeof start_error, "\"%.100s\" is not an address", host);
             return false;
         }
@@ -3230,8 +3261,10 @@ bool coop_net_start(const CoopNetConfig *cfg) {
     running = true;
     // (coop-upnp) a host others reach from the internet: the router is asked to forward the port (background)
     if (host_mode && !split_room && (ntohl(a.sin_addr.s_addr) >> 24) != 127) coop_upnp_start(port);
-    LOG("[coop] UDP port %d, peer %s, %s\n", port, have_peer ? peer_s : "(waiting for one)",
-        room_code[0] ? "join code set" : "no join code");
+    char peer_log[INET_ADDRSTRLEN + 8] = "(waiting for one)", peer_ip[INET_ADDRSTRLEN];
+    if (have_peer)
+        snprintf(peer_log, sizeof peer_log, "%s:%u", ip_masked(&peer.sin_addr, peer_ip), (unsigned)ntohs(peer.sin_port));
+    LOG("[coop] UDP port %d, peer %s, %s\n", port, peer_log, room_code[0] ? "join code set" : "no join code");
     if (local_name[0]) LOG("[coop] our name: \"%s\"\n", local_name);
     return true;
 }
@@ -3256,6 +3289,7 @@ void coop_net_stop(void) {
     my_id = -1, partner_pid = -1, guest_partner = true, guest_world_all = false, players_mask = 0;
     sent = received = 0;
     remote_hour = -1, remote_hour_ns = 0;
+    host_enemy_hp = -1;
     memset(relay_last_ns, 0, sizeof relay_last_ns);
     room_code[0] = 0;
     pthread_mutex_unlock(&lock);

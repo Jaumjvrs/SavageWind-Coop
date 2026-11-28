@@ -1,5 +1,7 @@
 # Build the co-op mod yourself
 
+This page is for Windows. On Linux (experimental) follow [docs/coop-linux.md](docs/coop-linux.md) instead.
+
 You don't have to trust the `.exe` files in the release: you can build the same `Co-op` folder from this source code
 on your own PC. It takes about 15-30 minutes the first time (mostly installing the tools) and about 5-10 minutes after
 that.
@@ -72,3 +74,6 @@ and [docs/BUILD-windows.md](docs/BUILD-windows.md). `make` without a `generated/
 which is all the co-op mod ships; the game code library (`swgame.dll`) is always built on each player's PC by Savage
 Wind's own setup, from their own game files. Protocol unit tests: `tests/test_coop_net.c` (run by the GitHub workflow
 in `.github/workflows/coop-tests.yml`).
+
+When publishing a GitHub release, attach both `SavageWind-Coop.zip` and `SavageWind-Coop.zip.sha256` (generated beside
+the zip; bump `Co-op/VERSION` first) so the launcher's auto-updater can verify the download.

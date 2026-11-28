@@ -366,7 +366,7 @@ bool find_igd(const std::vector<Adapter> &adapters, Session &s, Clock::time_poin
         for (const Reply &r : replies) {
             if (stopping(&s) || Clock::now() >= deadline) break;
             std::string sender = ipv4(r.router);
-            LOG("[coop] upnp: the router answered after %ld ms (%s via %s)\n", r.ms, sender.c_str(), ipv4(r.lan).c_str());
+            LOG("[coop] upnp: the router answered after %ld ms (%s via %s)\n", r.ms, masked(sender).c_str(), masked(ipv4(r.lan)).c_str());
             auto desc = http(r, r.location, nullptr, {}, &s);
             if (desc.status != 200) continue;
             for (int type = 0; type < COOP_UPNP_SERVICE_COUNT; type++) {
@@ -381,7 +381,7 @@ bool find_igd(const std::vector<Adapter> &adapters, Session &s, Clock::time_poin
                         inet_pton(AF_INET, address, &parsed) == 1) {
                         igd = candidate;
                         ext = ipv4(parsed);
-                        LOG("[coop] upnp: found %s on %s\n", igd.service, sender.c_str());
+                        LOG("[coop] upnp: found %s on %s\n", igd.service, masked(sender).c_str());
                         return true;
                     }
                 }
@@ -485,7 +485,7 @@ void run(std::shared_ptr<Session> sp, std::shared_ptr<Session> prior) {
             case COOP_UPNP_ADD:
                 if (dry) {
                     LOG("[coop] upnp: would add UDP %d -> %s:%d \"%s\" (dry run: not added)\n",
-                        port, lan.c_str(), port, COOP_UPNP_DESCRIPTION);
+                        port, masked(lan).c_str(), port, COOP_UPNP_DESCRIPTION);
                     owned = true;
                 } else {
                     auto r = add_mapping(igd, port, lan, 0);
@@ -503,7 +503,7 @@ void run(std::shared_ptr<Session> sp, std::shared_ptr<Session> prior) {
                         owned = true;
                         lease = entry.lease;
                     }
-                    if (owned) LOG("[coop] upnp: added UDP %d -> %s:%d (lease %u)\n", port, lan.c_str(), port, lease);
+                    if (owned) LOG("[coop] upnp: added UDP %d -> %s:%d (lease %u)\n", port, masked(lan).c_str(), port, lease);
                 }
                 if (owned) state = COOP_UPNP_OPEN;
                 break;

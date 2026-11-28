@@ -23,6 +23,7 @@
 #include "control_mem.h"
 #include "coop_net.h"
 #include "coop_split.h"
+#include "coop_split_hud.h"
 #include "framepace.h"
 #include "game_sites.h"
 #include "platform.h"
@@ -616,7 +617,8 @@ static uint8_t elemarrow_publish(uint64_t pa);
 #include "coop/enemies_frame.inc"  // per-frame work of the shared enemies (uses the world and gate code above)
 #include "coop/fauna.inc"  // (2026-11-19, protocol 80) birds, fish, insects: the host's are the guest's while close
 #include "coop/wildlife.inc"
-#include "coop/splitaudio.inc"  // (2026-11-21) split screen player 2 on shared speakers: quiet near player 1
+#include "coop/splitaudio.inc"
+#include "coop/splithud.inc"  // (2026-11-27) split map: this game's player line for the empty quarter's map  // (2026-11-21) split screen player 2 on shared speakers: quiet near player 1
 
 // Start of every game frame, on the game's main thread (runtime/hle/framepace.c rt_vfr_update).
 void rt_coop_game_frame(void) {
@@ -635,6 +637,7 @@ void rt_coop_game_frame(void) {
         spawn_hold_frame(plat_now_ns());  // (first: no creations while an event / load runs, crash report 21)
         bloodmoon_frame(gc);
         publish_local(gc);
+        splithud_frame();  // (split map: after publish_local, which keeps local_in_world current)
         coop_weather_frame(gc);
         lightning_frame(gc);
         evcalm_frame();  // (after publish_local: our Link's AS of this frame; before the avatars)
@@ -649,6 +652,7 @@ void rt_coop_game_frame(void) {
         doors_dev_frame(gc);  // (dev `coop door <AS>`)
         rav_update();       // (n4: every remote avatar, for arrows and enemy targets)
         looks_frame(gc);    // (coop-looks: our tunic colour out + on our own Link; the name tags placed + occluded)
+        (void)enemy_hp_pct();  // (ENEMYHP: our enemy life setting out when hosting, also with no enemy near)
         asdev_frame(gc, avatar.actor && avatar_alive() && avatar.frames >= 6 ? avatar.actor : 0);
         {
             CoopState rs;

@@ -8,8 +8,7 @@
 # Needs (tools\setup_windows.ps1 installs them): MSYS2 UCRT64 at C:\msys64 (clang, make, windres) and the python.org
 # Python 3.12. Downloads only the Python package oead (from PyPI, with pip) the first time.
 set -euo pipefail
-VERSION=0.1.0
-PROTOCOL=100
+PROTOCOL=101
 # The game code library id this co-op build must match: the one Savage Wind 0.6.0-alpha.6 builds on the player's PC.
 # If it differs, the files the id is made from changed (or the clone has CRLF line endings) and the launcher would
 # refuse to start, so the build stops.
@@ -17,6 +16,7 @@ EXPECTED_GAMELIB_ID=f63df6b1a6001541
 
 cd "$(dirname "$0")/.."
 root=$(pwd)
+VERSION=$(tr -d '\r\n' < Co-op/VERSION 2>/dev/null || echo 0.1.0)
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 for t in clang make windres; do command -v $t >/dev/null || { echo "missing $t: run tools\\setup_windows.ps1 first"; exit 1; }; done
 py312="${PY312:-$(cygpath -u "$LOCALAPPDATA")/Programs/Python/Python312/python.exe}"
@@ -34,7 +34,7 @@ fi
 echo "== 2/4 the starter program (Savage Wind Co-op.exe)"
 mkdir -p build/coop-launcher
 (cd Co-op && windres -O coff launcher/coop_launcher.rc -o ../build/coop-launcher/rc.o)
-clang -O2 -municode -mwindows Co-op/launcher/coop_launcher.c build/coop-launcher/rc.o -o "build/coop-launcher/Savage Wind Co-op.exe"
+clang -O2 -municode -mwindows Co-op/launcher/coop_launcher.c build/coop-launcher/rc.o -lwinhttp -lbcrypt -o "build/coop-launcher/Savage Wind Co-op.exe"
 
 echo "== 3/4 portable Python with oead (for the one-time setup on the player's PC)"
 venv=build/coop-py-venv
@@ -64,7 +64,8 @@ for name in sorted(os.listdir(out)):
 json.dump({'protocol': protocol, 'version': version, 'files': files}, open(os.path.join(out, 'manifest.json'), 'w'), indent=2)
 EOF
 (cd "$dist" && /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Compress-Archive -Path Co-op -DestinationPath SavageWind-Coop.zip -Force")
+sha256sum "$dist/SavageWind-Coop.zip" | awk '{print $1}' > "$dist/SavageWind-Coop.zip.sha256"
 echo
-echo "Done: $root/$dist/Co-op (and SavageWind-Coop.zip next to it)."
+echo "Done: $root/$dist/Co-op (and SavageWind-Coop.zip + .sha256 next to it)."
 echo "Put that Co-op folder inside your Savage Wind folder, next to savagewind.exe, and start Co-op\\Savage Wind Co-op.exe."
 echo "Online play: everyone needs the same co-op version ($VERSION, protocol $PROTOCOL)."

@@ -2,6 +2,61 @@
 #include "coop_net.c"
 #include <assert.h>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/time.h>
+#include <time.h>
+typedef int SOCKET;
+typedef uint32_t DWORD;
+typedef int WSADATA;
+#define FIONBIO 1
+#define MAKEWORD(a, b) 0
+#define closesocket close
+static int WSAStartup(int v, WSADATA *w) { (void)v; (void)w; return 0; }
+static void Sleep(unsigned ms) {
+    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+static uint64_t GetTickCount64(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+static DWORD GetTickCount(void) { return (DWORD)GetTickCount64(); }
+static int ioctlsocket(int s, long cmd, unsigned long *arg) {
+    (void)cmd;
+    int fl = fcntl(s, F_GETFL, 0);
+    return fl < 0 ? -1 : fcntl(s, F_SETFL, *arg ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK));
+}
+static int test_setsockopt(int s, int level, int optname, const void *optval, socklen_t optlen) {
+    if (level == SOL_SOCKET && optname == SO_RCVTIMEO && optlen == sizeof(DWORD)) {
+        DWORD ms = *(const DWORD *)optval;
+        struct timeval tv = {(time_t)(ms / 1000), (suseconds_t)((ms % 1000) * 1000)};
+        return setsockopt(s, level, optname, &tv, sizeof tv);
+    }
+    return setsockopt(s, level, optname, optval, optlen);
+}
+#define setsockopt test_setsockopt
+static int test_getsockname(int s, struct sockaddr *addr, int *len) {
+    socklen_t sl = (socklen_t)*len;
+    int r = getsockname(s, addr, &sl);
+    *len = (int)sl;
+    return r;
+}
+#define getsockname test_getsockname
+static int test_putenv(const char *s) {
+    const char *eq = strchr(s, '=');
+    if (!eq) return -1;
+    char key[128];
+    size_t n = (size_t)(eq - s);
+    if (!n || n >= sizeof key) return -1;
+    memcpy(key, s, n);
+    key[n] = 0;
+    return eq[1] ? setenv(key, eq + 1, 1) : unsetenv(key);
+}
+#define _putenv test_putenv
+#endif
+
 // (protocol 53) every datagram the tests send carries the join-code tag, like the game's (coop_sendto); a call written
 // (sendto)(...) sends a raw datagram without it
 static int tagged_sendto(SOCKET s, const char *b, int l, int f, const struct sockaddr *a, int al) {
@@ -531,7 +586,7 @@ static int events_main(void) {
       b=g; b.pos[1]=INFINITY; assert(!coop_mapmark_ok(&b));
       memcpy(&got,&g,sizeof g); assert(got.no==31 && got.pos[2]==g.pos[2]); }
     { CoopShrineRide e={0xf7d0622fu,{-673.2f,173.1f,1513.0f}}, got;
-      assert(COOP_VERSION==100 && sizeof e==16 && coop_shrine_ride_ok(&e));
+      assert(COOP_VERSION==101 && sizeof e==16 && coop_shrine_ride_ok(&e));
       assert(!coop_net_send_event(COOP_EV_SHRINE_RIDE,&e,sizeof e));
       p.seq++; deliver(sender,&target,&p,0);
       assert(coop_net_send_event_to(partner_pid,COOP_EV_SHRINE_RIDE,&e,sizeof e));
@@ -1052,6 +1107,7 @@ static int names_main(void) {
     bad=np; bad.echo=12345; SENDN(bad); assert(names[1][0]==0);                                   // not our session
     bad=np; bad.session=999; SENDN(bad); assert(names[1][0]==0);                                  // not that guest's
     bad=np; bad.e[0].tint=COOP_TINT_COUNT; SENDN(bad); assert(names[1][0]==0 && tints[1]==0);    // (65) colour range
+    bad=np; bad.enemy_hp=COOP_ENEMY_HP_MAX+2; SENDN(bad); assert(names[1][0]==0);                // (101) enemy life range
     bad=np; strcpy(bad.e[0].name,"Jo\xc3o"); SENDN(bad); assert(names[1][0]==0);                // (DISHINV) broken UTF-8
     bad=np; strcpy(bad.e[0].name,"Jo\xc0\xa3o"); SENDN(bad); assert(names[1][0]==0);            // overlong
     bad=np; strcpy(bad.e[0].name,"Jo\xc2\x85o"); SENDN(bad); assert(names[1][0]==0);            // C1 control
@@ -1062,6 +1118,7 @@ static int names_main(void) {
     assert(recv_kind(ga,&r,sizeof r,COOP_NAME_MAGIC,names_has) && r.echo==301);
     assert(r.e[0].pid==0 && !strcmp(r.e[0].name,"H\xc3\xb4st?Name") && r.e[1].pid==1 && !strcmp(r.e[1].name,"Pal"));
     assert(r.e[0].tint==COOP_TINT_RED && r.e[1].tint==COOP_TINT_BLUE);  // (65) colours relayed
+    assert(r.enemy_hp==0+1);  // (101) the host's enemy life (default 0: off) to its guests
     Sleep(20);  // GetTickCount64 can return the same tick for the echoed clock and the next receive.
     np.echo_t_ns=r.t_ns; np.echo_hold_us=1000; SENDN(np);
     assert(pings[1] >= 0 && pings[1] < 2000);
@@ -1087,7 +1144,10 @@ static int names_main(void) {
     hn.t_ns=777; hn.count=3; hn.e[0].pid=0; strcpy(hn.e[0].name,"Host"); hn.e[1].pid=1; strcpy(hn.e[1].name,"Fake me");
     hn.e[2].pid=2; strcpy(hn.e[2].name,"Third"); hn.e[2].ping_ms=42; hn.e[2].tint=COOP_TINT_PURPLE; hn.e[0].tint=COOP_TINT_GREEN;
     coop_net_set_tint(COOP_TINT_YELLOW);
-    SENDN(hn);
+    coop_net_set_enemy_hp(200); assert(coop_net_enemy_hp()==-1);  // (101) a guest: the host's, none heard yet
+    hn.enemy_hp=COOP_ENEMY_HP_MAX+2; SENDN(hn); assert(coop_net_enemy_hp()==-1);  // out of range: dropped
+    hn.enemy_hp=76;
+    SENDN(hn); assert(coop_net_enemy_hp()==75);
     assert(!strcmp(names[0],"Host") && !strcmp(names[2],"Third") && names[1][0]==0 && pings[2]==42);
     assert(coop_net_player_tint(2)==COOP_TINT_PURPLE && coop_net_player_tint(0)==COOP_TINT_GREEN && coop_net_player_tint(1)==COOP_TINT_YELLOW);
     { int seen=0; for (int i=0;i<20 && !seen;i++) { CoopNamePacket q; if (!recv_kind(ga,&q,sizeof q,COOP_NAME_MAGIC,NULL)) break;
@@ -1145,7 +1205,7 @@ int main(int argc, char **argv) {
         FD_ZERO(&fds);
         FD_SET(sender, &fds);
         struct timeval wait = {0, 150000};
-        assert(select(0, &fds, NULL, NULL, &wait) == 0); // no gameplay or lobby data before proof
+        assert(select((int)sender + 1, &fds, NULL, NULL, &wait) == 0); // no gameplay or lobby data before proof
     }
     deliver(sender,&target,&p,0); assert(count()==0); // no reciprocal echo yet
     p.echo=local_session; deliver(sender,&target,&p,0); assert(count()==1);
@@ -1385,7 +1445,7 @@ int main(int argc, char **argv) {
         for (DWORD t0=GetTickCount(); GetTickCount()-t0<6000 && !seen;) {
           fd_set fds; FD_ZERO(&fds); FD_SET(sender,&fds);
           struct timeval wait={0,100000};
-          if (select(0,&fds,NULL,NULL,&wait)<=0) continue;
+          if (select((int)sender + 1,&fds,NULL,NULL,&wait)<=0) continue;
           unsigned char buf[2048]; int got=recv(sender,(char *)buf,sizeof buf,0);
           uint32_t mg; memcpy(&mg,buf,4);
           if (got>=(int)sizeof(CoopFaunaPacket) && mg==COOP_FAUNA_MAGIC) {
@@ -1470,7 +1530,7 @@ int main(int argc, char **argv) {
         FD_ZERO(&fds);
         FD_SET(other, &fds);
         struct timeval wait = {0, 650000}; // long enough for one lobby send as well as state
-        assert(select(0, &fds, NULL, NULL, &wait) == 0);
+        assert(select((int)other + 1, &fds, NULL, NULL, &wait) == 0);
         nonblocking = 0;
         assert(!ioctlsocket(other, FIONBIO, &nonblocking));
         uint64_t cookie = request_challenge(other, &target, &p);

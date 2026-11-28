@@ -26,7 +26,7 @@
 > [!NOTE]
 > **Vibe-coded with AI.** Almost all of the code, the research into how the game works, the tests and these
 > docs were written by AI coding assistants (mainly Anthropic's Claude, with help from OpenAI's Codex and Google's
-> Gemini), following my direction and my play-testing. I'm a programmer, but I only lightly reviewed the code myself:
+> Gemini), following my direction, and play-tested online by me and my friends. I'm a programmer, but I only lightly reviewed the code myself:
 > most of the checking was done by those same AI tools and by playing. If you'd rather not use AI-made software, now
 > you know.
 
@@ -171,6 +171,8 @@ Found a way to crash or take over a co-op player's game over the network? Please
 [SECURITY.md](SECURITY.md)) instead of opening a public issue.
 
 ## Credits and license
+
+Thanks to my friends who play-tested co-op online with me.
 
 Built on [Savage Wind](https://github.com/Revivedx/SavageWindRecomp) by Revivedx and contributors. MIT license (see
 [LICENSE](LICENSE)). *The Legend of Zelda: Breath of the Wild* is © Nintendo. This project is not affiliated with or

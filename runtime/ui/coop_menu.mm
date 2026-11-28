@@ -46,13 +46,19 @@ namespace {
 
 enum {
     R_SAVE, R_USE_SAVE, R_NEW_SAVE,
-    R_MODE, R_NAME, R_NAMES, R_TINT, R_MARKS, R_HOST, R_PORT, R_UPNP, R_CODE, R_START,
+    R_MODE, R_NAME, R_NAMES, R_TINT, R_MARKS, R_EHP, R_HOST, R_PORT, R_UPNP, R_CODE, R_START,
     R_STATUS, R_ROUTER, R_LAN, R_PLAYER0, R_PLAYER_LAST = R_PLAYER0 + COOP_MAX_PLAYERS - 1,
-    R_DISH_PICK, R_DISH_GIVE, R_NAMES_L, R_TINT_L, R_MARKS_L, R_REFRESH, R_LEAVE,
-    R_SPLIT_LAYOUT, R_SPLIT_PAD, R_SPLIT_AUDIO, R_SPLIT_DEVICE, R_SPLIT,
-    R_SPLIT_LAYOUT_L, R_SPLIT_PAD_L, R_SPLIT_AUDIO_L, R_SPLIT_DEVICE_L, R_SPLIT_L,
+    R_DISH_PICK, R_DISH_GIVE, R_NAMES_L, R_TINT_L, R_MARKS_L, R_EHP_L, R_REFRESH, R_LEAVE,
+    R_SPLIT_LAYOUT, R_SPLIT_PAD, R_SPLIT_AUDIO, R_SPLIT_DEVICE, R_SPLIT, R_SPLIT_DROP, R_SPLIT_MAP,
+    R_SPLIT_LAYOUT_L, R_SPLIT_PAD_L, R_SPLIT_AUDIO_L, R_SPLIT_DEVICE_L, R_SPLIT_L, R_SPLIT_DROP_L, R_SPLIT_MAP_L,
+    // (coop-menu) the sub-menu buttons of the two top pages (their rows: COOP_PAGE_ONLINE / SPLIT / OPTS / DISH)
+    R_SUB_ONLINE, R_SUB_SPLIT, R_SUB_OPTS, R_SUB_DISH, R_SUB_SPLIT_L, R_SUB_OPTS_L,
+    R_COUNT
 };
 
+// (coop-menu) The order of this table is the order of the rows on their page (ids need not follow it). Top level of
+// the setup page: save, mode, name, the sub-menus, Start. Top level of the lobby: state, players, the sub-menus, Refresh,
+// Leave. The sub-menus hold the rest.
 const CoopMenuRow k_rows[] = {
     {R_SAVE, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Save", ""},
     {R_USE_SAVE, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Use this save",
@@ -62,19 +68,56 @@ const CoopMenuRow k_rows[] = {
     {R_MODE, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Mode",
      "Solo: play alone. Host: others join you. Join: play in a host's game."},
     {R_NAME, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Your name", "The name the other players see. A: type it."},
-    {R_NAMES, COOP_PAGE_SETUP, COOP_ROW_TOGGLE, "Names above players", "Shows the other players' names above their heads."},
-    {R_TINT, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Your tunic colour", "The colour the other players see your Link in."},
-    {R_MARKS, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Shared map markers",
-     "Which markers you place on the map the others get too. Pins only: pins are shared, stamps stay yours."},
-    {R_HOST, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Host address",
-     "Join: the host's IP address or network name, no port. A: type it."},
-    {R_PORT, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Port",
-     "UDP port. Host: the one others use. Join: the host's. A: type it."},
-    {R_UPNP, COOP_PAGE_SETUP, COOP_ROW_TOGGLE, "Open router port automatically",
-     "Host: your router (UPnP) forwards this port to this PC while you host."},
-    {R_CODE, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Room code",
-     "Same word for every player; other codes can't join. A: type it."},
+    {R_SUB_ONLINE, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Online",
+     "Host address, port, router port, room code."},
+    {R_SUB_SPLIT, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Split screen",
+     "Play on this PC: layout, controllers, sound."},
+    {R_SUB_OPTS, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Co-op options",
+     "Names, tunic colour, map markers, enemy life."},
     {R_START, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Start", "Starts co-op with these settings."},
+
+    {R_HOST, COOP_PAGE_ONLINE, COOP_ROW_BUTTON, "Host address",
+     "Join: the host's IP address or network name, no port. A: type it."},
+    {R_PORT, COOP_PAGE_ONLINE, COOP_ROW_BUTTON, "Port",
+     "UDP port. Host: the one others use. Join: the host's. A: type it."},
+    {R_UPNP, COOP_PAGE_ONLINE, COOP_ROW_TOGGLE, "Open router port automatically",
+     "Host: your router (UPnP) forwards this port to this PC while you host."},
+    {R_CODE, COOP_PAGE_ONLINE, COOP_ROW_BUTTON, "Room code",
+     "Same word for every player; other codes can't join. A: type it."},
+
+    {R_NAMES, COOP_PAGE_OPTS, COOP_ROW_TOGGLE, "Names above players", "Shows the other players' names above their heads."},
+    {R_TINT, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Your tunic colour", "The colour the other players see your Link in."},
+    {R_MARKS, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Shared map markers",
+     "Which markers you place on the map the others get too. Pins only: pins are shared, stamps stay yours."},
+    {R_EHP, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Enemy life",
+     "Host: enemies get this much more life for each extra player. Everyone uses the host's choice."},
+    {R_NAMES_L, COOP_PAGE_OPTS, COOP_ROW_TOGGLE, "Names above players", "Shows the other players' names above their heads."},
+    {R_TINT_L, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Your tunic colour", "The colour the other players see your Link in."},
+    {R_MARKS_L, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Shared map markers",
+     "Which markers you place on the map the others get too. Pins only: pins are shared, stamps stay yours."},
+    {R_EHP_L, COOP_PAGE_OPTS, COOP_ROW_CHOICE, "Enemy life",
+     "Host: enemies get this much more life for each extra player. Everyone uses the host's choice."},
+
+    {R_SPLIT_LAYOUT, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Split-screen layout", ""},
+    {R_SPLIT_PAD, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 controller", ""},
+    {R_SPLIT_AUDIO, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 sound", ""},
+    {R_SPLIT_DEVICE, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 sound device", ""},
+    {R_SPLIT, COOP_PAGE_SPLIT, COOP_ROW_BUTTON, "Split screen", ""},
+    {R_SPLIT_DROP, COOP_PAGE_SPLIT, COOP_ROW_BUTTON, "Remove a player", "Ends the game of the last player added."},
+    {R_SPLIT_MAP, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Map zoom (3 players)",
+     "With three players the empty quarter shows a map of everyone. It zooms out as you spread out; this sets how close."},
+    {R_SPLIT_LAYOUT_L, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Split-screen layout", ""},
+    {R_SPLIT_PAD_L, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 controller", ""},
+    {R_SPLIT_AUDIO_L, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 sound", ""},
+    {R_SPLIT_DEVICE_L, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Player 2 sound device", ""},
+    {R_SPLIT_L, COOP_PAGE_SPLIT, COOP_ROW_BUTTON, "Split screen", ""},
+    {R_SPLIT_DROP_L, COOP_PAGE_SPLIT, COOP_ROW_BUTTON, "Remove a player", "Ends the game of the last player added."},
+    {R_SPLIT_MAP_L, COOP_PAGE_SPLIT, COOP_ROW_CHOICE, "Map zoom (3 players)",
+     "With three players the empty quarter shows a map of everyone. It zooms out as you spread out; this sets how close."},
+
+    {R_DISH_PICK, COOP_PAGE_DISH, COOP_ROW_CHOICE, "Cooked dish", ""},
+    {R_DISH_GIVE, COOP_PAGE_DISH, COOP_ROW_BUTTON, "Give a dish", "Close the pause menu to hand the dish over."},
+
     {R_STATUS, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Co-op", ""},
     {R_ROUTER, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Router port", ""},
     {R_LAN, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Same Wi-Fi address",
@@ -87,30 +130,23 @@ const CoopMenuRow k_rows[] = {
     {R_PLAYER0 + 5, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Player", ""},
     {R_PLAYER0 + 6, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Player", ""},
     {R_PLAYER0 + 7, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Player", ""},
-    {R_DISH_PICK, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Cooked dish", ""},
-    {R_DISH_GIVE, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Give a dish", "Close the pause menu to hand the dish over."},
-    {R_NAMES_L, COOP_PAGE_LOBBY, COOP_ROW_TOGGLE, "Names above players", "Shows the other players' names above their heads."},
-    {R_TINT_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Your tunic colour", "The colour the other players see your Link in."},
-    {R_MARKS_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Shared map markers",
-     "Which markers you place on the map the others get too. Pins only: pins are shared, stamps stay yours."},
+    {R_SUB_DISH, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Give a dish", "Hand a cooked dish to your partner."},
+    {R_SUB_SPLIT_L, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Split screen",
+     "Play on this PC: layout, controllers, sound."},
+    {R_SUB_OPTS_L, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Co-op options",
+     "Names, tunic colour, map markers, enemy life."},
     {R_REFRESH, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Refresh", "Updates the names here (they do not change by themselves)."},
     {R_LEAVE, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Leave co-op",
      "Leaves and restarts at the title screen (unsaved progress is lost)."},
-    {R_SPLIT_LAYOUT, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Split-screen layout", ""},
-    {R_SPLIT_PAD, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Player 2 controller", ""},
-    {R_SPLIT_AUDIO, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Player 2 sound", ""},
-    {R_SPLIT_DEVICE, COOP_PAGE_SETUP, COOP_ROW_CHOICE, "Player 2 sound device", ""},
-    {R_SPLIT, COOP_PAGE_SETUP, COOP_ROW_BUTTON, "Split screen", ""},
-    {R_SPLIT_LAYOUT_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Split-screen layout", ""},
-    {R_SPLIT_PAD_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Player 2 controller", ""},
-    {R_SPLIT_AUDIO_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Player 2 sound", ""},
-    {R_SPLIT_DEVICE_L, COOP_PAGE_LOBBY, COOP_ROW_CHOICE, "Player 2 sound device", ""},
-    {R_SPLIT_L, COOP_PAGE_LOBBY, COOP_ROW_BUTTON, "Split screen", ""},
 };
-static_assert(sizeof k_rows / sizeof k_rows[0] == R_SPLIT_L + 1, "one row per id, in id order");
+static_assert(sizeof k_rows / sizeof k_rows[0] == R_COUNT, "one row per id");
 
 bool split_action(int id) { return id == R_SPLIT || id == R_SPLIT_L; }
+bool split_drop(int id) { return id == R_SPLIT_DROP || id == R_SPLIT_DROP_L; }  // (4-player split screen)
+bool split_full() { return coop_split_count() >= coop_split_max(); }
 bool split_layout(int id) { return id == R_SPLIT_LAYOUT || id == R_SPLIT_LAYOUT_L; }
+bool split_map(int id) { return id == R_SPLIT_MAP || id == R_SPLIT_MAP_L; }  // (split map: SPLIT_ZOOM_*)
+const char *const k_split_zoom[3] = {"Near", "Normal", "Far"};
 bool split_pad(int id) { return id == R_SPLIT_PAD || id == R_SPLIT_PAD_L; }
 bool split_audio_row(int id) { return id == R_SPLIT_AUDIO || id == R_SPLIT_AUDIO_L; }
 bool split_device_row(int id) { return id == R_SPLIT_DEVICE || id == R_SPLIT_DEVICE_L; }
@@ -162,6 +198,17 @@ const char *const k_modes[] = {"Solo", "Host", "Join"};
 // (coop-looks) COOP_TINT_* order (coop_net.h)
 // (coop-mapmark) settings coop_sharemarks
 const char *const k_marks[3] = {"Off", "Pins only", "All"};
+// (ENEMYHP) "Enemy life": percent more per extra player (settings coop_enemyhp; the host's is sent to the guests)
+const int k_ehp[] = {0, 25, 50, 75, 100, 150, 200};
+const int EHP_COUNT = (int)(sizeof k_ehp / sizeof k_ehp[0]);
+bool ehp_row(int id) { return id == R_EHP || id == R_EHP_L; }
+bool ehp_guest(void) { return coop_net_on() && !coop_net_is_host(); }  // (shows the host's, can't change it)
+int ehp_index(int per) {  // the nearest choice
+    int best = 0;
+    for (int i = 1; i < EHP_COUNT; i++)
+        if (abs(k_ehp[i] - per) < abs(k_ehp[best] - per)) best = i;
+    return best;
+}
 const char *const k_tints[COOP_TINT_COUNT] = {"Default", "Red", "Blue", "Green", "Yellow", "Purple", "Black", "White"};
 const int DEFAULT_PORT = 47000;
 
@@ -268,13 +315,37 @@ extern "C" void coop_menu_setup(int max_choices) {
     g_new_save[0] = 0;
 }
 
+// (coop-menu) the Options and Split-screen sub-menus hold both the setup's rows and the lobby's: each shows its own
+static bool setup_variant(int id) { return (id >= R_NAMES && id <= R_EHP) || (id >= R_SPLIT_LAYOUT && id <= R_SPLIT_MAP); }
+static bool lobby_variant(int id) {
+    return (id >= R_NAMES_L && id <= R_EHP_L) || (id >= R_SPLIT_LAYOUT_L && id <= R_SPLIT_MAP_L);
+}
+static bool split_menu_available(void) {
+    const char *enabled = getenv("SAVAGEWIND_COOP_SPLITMENU");
+    return (!enabled || strcmp(enabled, "0")) && coop_split_available() && (!coop_net_on() || coop_net_is_host());
+}
+
+extern "C" int coop_menu_target(int id) {
+    switch (id) {
+    case R_SUB_ONLINE: return COOP_PAGE_ONLINE;
+    case R_SUB_SPLIT: case R_SUB_SPLIT_L: return COOP_PAGE_SPLIT;
+    case R_SUB_OPTS: case R_SUB_OPTS_L: return COOP_PAGE_OPTS;
+    case R_SUB_DISH: return COOP_PAGE_DISH;
+    }
+    return COOP_PAGE_SETUP;
+}
+
 extern "C" bool coop_menu_shown(int id) {
+    if (id == R_SUB_SPLIT || id == R_SUB_SPLIT_L) return split_menu_available();
+    if (id == R_SUB_DISH) return coop_dish_enabled() && g_ndishes > 0;  // (listed when the lobby opened)
+    if (id >= R_SUB_ONLINE) return true;
+    if (setup_variant(id) && coop_menu_lobby()) return false;
+    if (lobby_variant(id) && !coop_menu_lobby()) return false;
     if (split_audio_row(id)) devices_update();
     if ((split_audio_row(id) || split_device_row(id)) && !split_audio_allowed()) return false;
-    if (id >= R_SPLIT_LAYOUT) {
-        const char *enabled = getenv("SAVAGEWIND_COOP_SPLITMENU");
-        return (!enabled || strcmp(enabled, "0")) && coop_split_available() && (!coop_net_on() || coop_net_is_host());
-    }
+    if (split_drop(id) && coop_split_max() < 2) return false;  // (SAVAGEWIND_COOP_SPLIT4=0: one button, as before)
+    if (split_map(id) && coop_split_max() < 2) return false;
+    if (id >= R_SPLIT_LAYOUT) return split_menu_available();
     if (id >= R_SAVE && id <= R_NEW_SAVE) return saves_on() && !g_saves.empty();
     if (id == R_ROUTER) {  // (coop-upnp) a host reachable from the internet: the router's answer
         CoopUpnpStatus st;
@@ -298,6 +369,7 @@ extern "C" bool coop_menu_shown(int id) {
 
 extern "C" int coop_menu_count(int id) {
     if (split_layout(id)) return 2;
+    if (split_map(id)) return 3;
     if (split_pad(id)) return 4;
     if (split_audio_row(id)) return SPLIT_AUDIO_COUNT;
     if (split_device_row(id)) return device_count();
@@ -306,11 +378,13 @@ extern "C" int coop_menu_count(int id) {
     if (id == R_TINT || id == R_TINT_L) return COOP_TINT_COUNT;
     if (id == R_NAMES || id == R_NAMES_L || id == R_UPNP) return 2;
     if (id == R_MARKS || id == R_MARKS_L) return 3;
+    if (ehp_row(id)) return EHP_COUNT;
     return id == R_MODE ? 3 : 1;
 }
 
 extern "C" int coop_menu_get(int id) {
     if (split_layout(id)) return g_settings.split_layout == 1;
+    if (split_map(id)) return g_settings.split_map_zoom >= 0 && g_settings.split_map_zoom <= 2 ? g_settings.split_map_zoom : 1;
     if (split_pad(id)) return g_settings.split_pad >= 0 && g_settings.split_pad < 4 ? g_settings.split_pad : 1;
     if (split_audio_row(id)) return g_settings.split_audio >= 0 && g_settings.split_audio < SPLIT_AUDIO_COUNT ? g_settings.split_audio : 0;
     if (split_device_row(id)) return device_index() >= 0 ? device_index() : device_count() - 1;
@@ -321,11 +395,13 @@ extern "C" int coop_menu_get(int id) {
     if (id == R_UPNP) return g_settings.coop_upnp ? 1 : 0;
     if (id == R_MARKS || id == R_MARKS_L) return g_settings.coop_sharemarks >= 0 && g_settings.coop_sharemarks <= 2 ? g_settings.coop_sharemarks : 1;
     if (id == R_TINT || id == R_TINT_L) return g_settings.coop_tint >= 0 && g_settings.coop_tint < COOP_TINT_COUNT ? g_settings.coop_tint : 0;
+    if (ehp_row(id)) return ehp_index(ehp_guest() && coop_net_enemy_hp() >= 0 ? coop_net_enemy_hp() : g_settings.coop_enemyhp);
     return 0;
 }
 
 extern "C" void coop_menu_set(int id, int v) {
     if (split_layout(id) && v >= 0 && v < 2 && v != g_settings.split_layout) g_settings.split_layout = v, settings_save();
+    if (split_map(id) && v >= 0 && v <= 2 && v != g_settings.split_map_zoom) g_settings.split_map_zoom = v, settings_save();
     if (split_pad(id) && v >= 0 && v < 4 && v != g_settings.split_pad) g_settings.split_pad = v, settings_save();
     if (split_audio_row(id) && v >= 0 && v < SPLIT_AUDIO_COUNT) {
         g_settings.split_audio = v;
@@ -347,18 +423,23 @@ extern "C" void coop_menu_set(int id, int v) {
     if (id == R_UPNP) g_settings.coop_upnp = v ? 1 : 0;
     if ((id == R_MARKS || id == R_MARKS_L) && v >= 0 && v <= 2) g_settings.coop_sharemarks = v;
     if ((id == R_TINT || id == R_TINT_L) && v >= 0 && v < COOP_TINT_COUNT) g_settings.coop_tint = v, coop_net_set_tint(v);
+    if (ehp_row(id) && v >= 0 && v < EHP_COUNT && !ehp_guest()) g_settings.coop_enemyhp = k_ehp[v];
 }
 
 extern "C" bool coop_menu_off(int id, int) {
+    if (split_action(id) && coop_split_max() == 1 && coop_split_count()) return coop_split_pending();  // (Remove)
     if (split_action(id))
-        return coop_split_pending() || (coop_net_on() && !coop_net_local_join_port());
-    if (split_layout(id) || split_pad(id)) return coop_split_pending() || coop_split_pid();
+        return coop_split_pending() || split_full() || (coop_net_on() && !coop_net_local_join_port());
+    if (split_drop(id)) return coop_split_pending() || !coop_split_count();
+    if (split_layout(id)) return coop_split_pending() || coop_split_count();
+    if (split_pad(id)) return coop_split_pending() || split_full();
     if (split_audio_row(id)) return coop_split_pending();
     if (split_device_row(id)) return coop_split_pending() || g_settings.split_audio != SPLIT_AUDIO_DEVICE || !g_ndevices;
     if (id == R_DISH_GIVE) return !g_ndishes || !coop_dish_can_give();
     if (id == R_USE_SAVE)
         return g_saves.empty() || !strcmp(g_saves[g_selected_save].name, g_active_save);
     if (id == R_HOST) return g_settings.coop_mode != COOP_MODE_JOIN;
+    if (ehp_row(id)) return ehp_guest() || (id == R_EHP && g_settings.coop_mode == COOP_MODE_JOIN);
     if (id == R_ROUTER) {  // (Copy address: only once the router told it)
         CoopUpnpStatus st;
         coop_upnp_status(&st);
@@ -372,6 +453,7 @@ extern "C" bool coop_menu_off(int id, int) {
 extern "C" const char *coop_menu_label(int id, int v) {
     std::string &o = buf();
     if (split_layout(id)) return v == COOP_SPLIT_LEFT ? tr("Left / right") : tr("Top / bottom");
+    if (split_map(id)) return tr(k_split_zoom[v >= 0 && v <= 2 ? v : 1]);
     if (split_pad(id)) { o = std::to_string(v + 1); return o.c_str(); }
     if (split_audio_row(id)) return tr(k_split_audio[v >= 0 && v < SPLIT_AUDIO_COUNT ? v : 0]);
     if (split_device_row(id)) {
@@ -379,15 +461,44 @@ extern "C" const char *coop_menu_label(int id, int v) {
         if (g_settings.split_audio_device[0]) return device_short(g_settings.split_audio_device, o);  // (saved, not connected now)
         return tr("(no devices found)");
     }
-    if (split_action(id)) return coop_split_pid() ? tr("Remove player 2") : tr("Add player 2");
+    if (split_action(id)) {
+        // (4-player split screen) "Add player 2" keeps its translations; 3 and 4 use the numbered text
+        int n = coop_split_next_player();
+        if (coop_split_max() == 1 && coop_split_count()) return tr("Remove player 2");
+        if (split_full()) return tr("Add a player");
+        if (n == 2) return tr("Add player 2");
+        char t[64];
+        snprintf(t, sizeof t, tr("Add player %d"), n);
+        o = t;
+        return o.c_str();
+    }
+    if (split_drop(id)) {
+        int n = coop_split_last_player();
+        if (n <= 2) return tr("Remove player 2");
+        char t[64];
+        snprintf(t, sizeof t, tr("Remove player %d"), n);
+        o = t;
+        return o.c_str();
+    }
     switch (id) {
     case R_DISH_PICK: return v >= 0 && v < g_ndishes ? items_dish_name(g_dishes[v].name) : "";
+    case R_SUB_ONLINE: case R_SUB_SPLIT: case R_SUB_OPTS: case R_SUB_DISH: case R_SUB_SPLIT_L: case R_SUB_OPTS_L:
+        return tr("Open");
     case R_DISH_GIVE: return tr("Give");
     case R_SAVE: return v >= 0 && v < (int)g_saves.size() ? save_label(g_saves[v].name) : "";
     case R_USE_SAVE: return tr("Use");
     case R_NEW_SAVE: return tr("Create");
     case R_MODE: return tr(k_modes[v >= 0 && v < 3 ? v : 0]);
     case R_MARKS: case R_MARKS_L: return tr(k_marks[v >= 0 && v <= 2 ? v : 1]);
+    case R_EHP: case R_EHP_L: {
+        if (ehp_guest() && coop_net_enemy_hp() < 0) return tr("(the host's)");
+        int per = ehp_guest() ? coop_net_enemy_hp() : k_ehp[v >= 0 && v < EHP_COUNT ? v : 0];
+        if (!per) return tr("Normal");
+        char t[64];
+        snprintf(t, sizeof t, tr("+%d%% per extra player"), per);
+        o = t;
+        return o.c_str();
+    }
     case R_TINT: case R_TINT_L: return tr(k_tints[v >= 0 && v < COOP_TINT_COUNT ? v : 0]);
     case R_NAME: return g_settings.coop_name[0] ? g_settings.coop_name : tr("(not set)");
     case R_HOST: return g_settings.coop_host[0] ? g_settings.coop_host : tr("(not set)");
@@ -435,6 +546,11 @@ extern "C" const char *coop_menu_label(int id, int v) {
 }
 
 extern "C" const char *coop_menu_title(int id) {
+    if (split_pad(id) && coop_split_count() && !split_full()) {  // (4-player split screen) the next player's
+        char t[64];
+        snprintf(t, sizeof t, tr("Player %d controller"), coop_split_next_player());
+        return (buf() = t).c_str();
+    }
     if (id == R_LEAVE && stop_only()) return tr(coop_net_is_host() ? "Stop hosting" : "Stop joining");
     if (id == R_SAVE) {
         const char *title = tr("Save profile");
@@ -455,6 +571,9 @@ extern "C" const char *coop_menu_title(int id) {
 
 extern "C" const char *coop_menu_desc(int id) {
     if (split_action(id) && coop_split_failed()) return tr("Could not start split screen. See the game log.");
+    if (split_action(id) && coop_split_max() > 1)
+        return tr("Up to four players on one PC, each with their own controller. With three or four, each gets a "
+                  "quarter of the window; players 3 and 4 play without sound.");
     if (id == R_LEAVE && stop_only())
         return tr("Nobody has connected yet: back to the setup page to change the address or the mode. No restart.");
     std::string &o = buf();
@@ -547,9 +666,9 @@ extern "C" const char *coop_menu_desc(int id) {
 }
 
 extern "C" int coop_menu_press(int id) {
-    if (split_action(id)) {
+    if (split_action(id) || split_drop(id)) {
         if (!coop_menu_off(id, 0)) {
-            bool add = !coop_split_pid();
+            bool add = split_action(id) && !(coop_split_max() == 1 && coop_split_count());
             if (coop_split_request(add, g_settings.split_layout == 1, coop_menu_get(R_SPLIT_PAD) + 1))
                 fprintf(stderr, "[split] menu requested %s\n", add ? "add" : "remove");
         }
@@ -557,6 +676,8 @@ extern "C" int coop_menu_press(int id) {
     }
     char t[96];
     switch (id) {
+    case R_SUB_ONLINE: case R_SUB_SPLIT: case R_SUB_OPTS: case R_SUB_DISH: case R_SUB_SPLIT_L: case R_SUB_OPTS_L:
+        return COOP_PRESS_SUBMENU;
     case R_DISH_GIVE:
         if (g_ndishes) coop_dish_request(&g_dishes[g_dish]);
         return COOP_PRESS_REDRAW;

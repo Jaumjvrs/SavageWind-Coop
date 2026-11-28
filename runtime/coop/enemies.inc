@@ -151,6 +151,8 @@ static struct Enemy {
     int wake_tries;        // (wake) extra hits injected because it still slept after the take-over
     bool wake_battle;      // (2026-11-14, softlock) taken over mid-fight: an idle AS counts as "asleep" in the check
     uint64_t follow_ns;    // (softlock) when this copy started following (own_as is only fresh just after that)
+    uint64_t rise_ns;      // (STALRISE) when a buried Stal body here was last told to rise
+    int rise_n;            // (STALRISE) rise tries since it was last up here
     uint64_t fight_ns;     // (softlock, host) when the side running it last showed a battle AS
     bool tgt_partner;      // (2026-11-14, target) we run it and point it at the other player's avatar
     uint64_t tgt_av;       // (n4) which remote avatar (the partner's or, MULTITARGET, an extra player's)
@@ -178,7 +180,9 @@ static struct Enemy {
     bool dead;             // spawned copy: it died here (never created again)
     uint64_t retry_ns;     // spawned copy: no new creation attempt before this
     uint64_t born_ns;      // spawned copy: when we created it (its life reads 1 until the game initialises it)
-    bool look_req;         // (ENEMYLOOK) follower: the owner's enemy looks at a player (request kept on)
+    int32_t raw;           // (ENEMYHP) its full life in the game's own units (the highest seen before scaling)
+    uint32_t hp_pct;       // (ENEMYHP) the life percent this actor's life was raised to (0: not yet, a new actor)
+    bool look_req;        // (ENEMYLOOK) follower: the owner's enemy looks at a player (request kept on)
     uint64_t look_who;     // (ENEMYLOOK) follower: whom the copy's look-at points at now (for the log)
     uint64_t look_vt, look_o;  // (ENEMYLOOK) follower: its actor's vtable and look-at object when it began to follow
     bool mtx_follow;       // (MTXPOS) follower: no body found, the copy is moved by its actor matrices
@@ -283,8 +287,55 @@ static void spawned_seen(uint64_t a, const char *name, int32_t life) {
     struct Enemy *e = &enemies[k];
     e->spawned = e->native = e->mine = true;
     e->actor = a, e->unit = LD64(a + PROC_UNIT), e->unit_id = LD32(a + PROC_ID);
-    e->base = e->last = life;
+    e->base = e->last = e->raw = life;
     LOG("[coop] run-time enemy %s attached as %08x: life %d\n", e->name, id, life);
+}
+
+// (2026-11-27, STALHEAD; 3-player split playtest: "a skeleton enemy wasn't synced" with players 1 and 2 close) A
+// Stalkoblin's loose head is a run-time actor with no HashId, so it was shared as a run-time spawn: each game gave its
+// own head its own co-op id (c0000001 on player 1, 84000001 on player 2), and the guest's SPAWNDEDUP deleted its OWN
+// head (its body then had none: it fell apart and got up out of step) and showed a lone copy of the host's instead.
+// Now a head next to a map-placed Stal body of its kind (Enemy_X_Bone.._Head next to Enemy_X_Bone..) takes an id made
+// from that body's HashId, the same in every game, and is shared like a placed enemy (nearer player runs it, damage
+// and death shared; the body still follows its own head, STALBODY). A head with no free body near yet is looked at
+// again next scan, never shared as a run-time spawn (a Stal head of a run-time body stays each game's own).
+// SAVAGEWIND_COOP_STALHEAD=0: off (as before).
+#define STALHEAD_R 3.0f
+static bool env_on(const char *name, int *cache);
+static bool enemy_alive(const struct Enemy *e);
+static bool stalhead_on(void) {
+    static int c = -1;
+    return env_on("SAVAGEWIND_COOP_STALHEAD", &c);
+}
+static bool stal_head_name(const char *n) {
+    size_t l = strlen(n);
+    return l > 5 && !strcmp(n + l - 5, "_Head") && strstr(n, "_Bone");
+}
+static uint32_t stal_head_id(uint32_t body_hash) {
+    uint32_t id = (body_hash * 0x9e3779b1u) & 0x7fffffffu;  // (bit 31 clear: not a run-time spawn id)
+    return id ? id : 1;
+}
+// The head's id (0: no free body of its kind within STALHEAD_R of it now)
+static uint32_t stal_head_pair(uint64_t a, const char *name) {
+    size_t bl = strlen(name) - 5;
+    float zero[3] = {0, 0, 0}, hp[3], q[3];
+    actor_dist(a, zero, hp);
+    int best = -1;
+    float bd = STALHEAD_R;
+    for (int i = 0; i < enemy_count; i++) {
+        struct Enemy *b = &enemies[i];
+        if (b->spawned || !b->actor || strncmp(b->name, name, bl) || b->name[bl] || !enemy_alive(b)) continue;
+        uint32_t id = stal_head_id(b->hash);
+        bool taken = false;
+        for (int k = 0; k < enemy_count && !taken; k++)
+            taken = enemies[k].hash == id && enemies[k].actor && enemies[k].actor != a && enemy_alive(&enemies[k]);
+        float d = taken ? STALHEAD_R : actor_dist(b->actor, hp, q);
+        if (d < bd) bd = d, best = i;
+    }
+    if (best < 0) return 0;
+    LOG("[coop] enemy %s: the head of %s %u (%.1f m), shared as %u\n", name, enemies[best].name, enemies[best].hash,
+        bd, stal_head_id(enemies[best].hash));
+    return stal_head_id(enemies[best].hash);
 }
 
 static void enemy_seen(Cpu *c, uint64_t a, const char *name, void *ctx) {
@@ -294,6 +345,11 @@ static void enemy_seen(Cpu *c, uint64_t a, const char *name, void *ctx) {
     int32_t life = (int32_t)LD32(a + ENEMY_LIFE);
     if (life <= 0 || life > 100000) return;
     uint32_t hash = actor_hash(c, a);
+    if (!hash && stal_head_name(name) && stalhead_on()) {  // (STALHEAD) by its body's id, or not yet
+        for (int i = 0; i < enemy_count; i++)
+            if (enemies[i].actor == a) return;  // (paired already)
+        if (!(hash = stal_head_pair(a, name))) return;
+    }
     if (!hash) { spawned_seen(a, name, life); return; }
     int k = enemy_slot(hash, name);
     if (k < 0) return;
@@ -301,6 +357,8 @@ static void enemy_seen(Cpu *c, uint64_t a, const char *name, void *ctx) {
     if (e->actor == a) return;
     // (Re)attached: a new copy of this enemy (first sight, or loaded again). Its life now is not damage.
     e->actor = a, e->unit = LD64(a + PROC_UNIT), e->unit_id = LD32(a + PROC_ID);
+    e->hp_pct = 0;  // (ENEMYHP) a new actor has the game's own life
+    if (life > e->raw) e->raw = life;
     e->following = false;
     e->seen_ns = e->born_ns = plat_now_ns();  // (born_ns: the AI warm-up in enemy_follow)
     if (life > e->base) e->base = life;
@@ -311,8 +369,9 @@ static void enemy_seen(Cpu *c, uint64_t a, const char *name, void *ctx) {
     static int revive_c = -1;
     uint32_t remote = coop_net_remote_damage(e->hash);
     uint64_t spent = (uint64_t)(e->own - e->own_base) + (remote >= e->remote_base ? remote - e->remote_base : 0);
-    if (e->base > 0 && spent >= (uint64_t)e->base && strstr(e->name, "_Bone") && !strstr(e->name, "_Head") &&
-        env_on("SAVAGEWIND_COOP_REVIVE", &revive_c)) {
+    // (STALHEAD) also a paired Stal head: the next night's head of that body is a new one, not the one killed before
+    bool stal = strstr(e->name, "_Bone") && (!strstr(e->name, "_Head") || stalhead_on());
+    if (e->base > 0 && spent >= (uint64_t)e->base && stal && env_on("SAVAGEWIND_COOP_REVIVE", &revive_c)) {
         e->own_base = e->own, e->remote_base = remote;
         LOG("[coop] enemy %s %u got up again as a new copy: a new life\n", e->name, e->hash);
     }
@@ -729,6 +788,38 @@ static bool warm_on(void) {
     if (on < 0) on = !(getenv("SAVAGEWIND_COOP_ENEMY_WARM") && !strcmp(getenv("SAVAGEWIND_COOP_ENEMY_WARM"), "0"));
     return on;
 }
+// (2026-11-27, STALRISE; 3-player split playtest: "when p2 loaded, the stalkoblins were already in p1 game, so he
+// didnt get them") A Stal body still underground has no physics body, so it cannot follow; it stayed buried until this
+// game's own AI raised it, while the other side's fought. When the other side's is up (any AS but an UnderGround* one)
+// and ours has no body: ours plays its rise (UnderGroundAppear), again every 4 s while it has no body - whoever runs
+// it (second playtest: one try right after loading did nothing, and a fight hand-over to the buried side stopped the
+// tries). Then it follows (or runs) once its body is there. SAVAGEWIND_COOP_STALRISE=0: off.
+static void stal_rise(Cpu *c, struct Enemy *e, uint64_t now) {
+    static int rise_c = -1;
+    if (!strstr(e->name, "_Bone") || strstr(e->name, "_Head") || !env_on("SAVAGEWIND_COOP_STALRISE", &rise_c)) return;
+    if (enemy_body(e->actor)) {
+        if (e->rise_n) LOG("[coop] enemy %s %u: up here now (after %d rise(s))\n", e->name, e->hash, e->rise_n);
+        e->rise_n = 0;
+        return;
+    }
+    float p[3], rot[4];
+    double age = 99;
+    char as[32];
+    if (!(coop_net_remote_enemy_pos(e->hash, p, rot, &age, as, sizeof as) && age < ENEMY_FOLLOW_MAX_AGE) || !as[0] ||
+        !strncmp(as, "UnderGround", 11) || now - e->rise_ns < 4000000000ull || !local_in_world())
+        return;
+    char cur[64];
+    player_as_name(c, e->actor, cur, sizeof cur);
+    // (third playtest: 3 games at 20-40 fps, the rise takes longer than 4 s there, and each retry restarted it: never
+    // up in 9 tries) While our rise still plays, let it finish; restart it only if it is stuck for 30 s.
+    if (!strcmp(cur, "UnderGroundAppear") && e->rise_n && now - e->rise_ns < 30000000000ull) return;
+    e->rise_ns = now, e->rise_n++;
+    play_anim(c, e->actor, "UnderGroundAppear", 0);
+    if (e->rise_n <= 3 || e->rise_n % 15 == 0)
+        LOG("[coop] enemy %s %u: still underground here (AS %s) while the other side's is up (AS %s): rises (try %d, "
+            "%s)\n", e->name, e->hash, cur[0] ? cur : "-", as, e->rise_n, e->mine ? "we run it" : "the other side runs it");
+}
+
 static void enemy_follow(Cpu *c, struct Enemy *e, int32_t life) {
     float p[3], rot[4];
     double age;
@@ -754,7 +845,7 @@ static void enemy_follow(Cpu *c, struct Enemy *e, int32_t life) {
     double rfage = 99;
     coop_net_remote_enemy_flags(e->hash, &rfl, &rfage);
     bool their_mtx = (rfl & COOP_ENEMY_MTXPOS) != 0;
-    if (!body && !(e->animal && mtxpos_on())) return;
+    if (!body && !(e->animal && mtxpos_on())) return;  // (a buried Stal body: stal_rise)
     const float *am = (const float *)(uintptr_t)(e->actor + ACTOR_MTX);
     if (e->following && e->mtx_follow != !body) {  // (body found / lost while following: shown is in the other frame)
         e->following = false;
@@ -942,6 +1033,65 @@ static bool battle_as(const char *as) {
 static bool env_on(const char *name, int *cache) {
     if (*cache < 0) *cache = !(getenv(name) && !strcmp(getenv(name), "0"));
     return *cache;
+}
+// (ENEMYHP, 2026-11-27: enemy life grows with the number of players; the host chooses)
+// Shared enemies get a percent more life per extra player in the session (50: 2 players 150%, 3 players
+// 200%; 0 = off, the game's own life: the default). The host decides (Options > Co-op "Enemy life", settings coop_enemyhp;
+// SAVAGEWIND_COOP_ENEMYHP overrides it on that PC) and sends it in its name list (protocol 101); a guest uses the
+// host's and leaves enemies at the game's own life until it has heard it. Each game raises a new actor's life itself,
+// by the same rule: the shared health bar works on `base - damage`, so both sides need the same base. The count is
+// the most players heard at once this session (a partner's short drop does not shrink it); when it grows or the host
+// changes the setting, enemies already met follow (damage taken is kept). Hits and kills stay the game's own (a
+// raised life, not scaled damage: a scaled-back killing blow would come too late). Not raised: animals, Stal bodies
+// (each game's body follows its own head; the heads are raised).
+static uint32_t enemy_hp_pct(void) {
+    static int env = -2, said = -2;
+    static unsigned n_max = 1;
+    if (env == -2) {
+        const char *v = getenv("SAVAGEWIND_COOP_ENEMYHP");
+        env = v && *v ? atoi(v) : -1;
+        if (env > COOP_ENEMY_HP_MAX) env = COOP_ENEMY_HP_MAX;
+        if (env < -1) env = 0;
+    }
+    int mine = env >= 0 ? env : g_settings.coop_enemyhp;
+    coop_net_set_enemy_hp(mine);  // (what we send when hosting)
+    int per = coop_net_enemy_hp();
+    if (per != said) {
+        said = per;
+        if (per < 0) LOG("[coop] enemy life: waiting for the host's setting\n");
+        else LOG("[coop] enemy life: +%d%% per extra player%s\n", per, per ? "" : " (off)");
+    }
+    if (per <= 0) return 100;
+    unsigned n = 1 + (unsigned)__builtin_popcount(coop_net_players(3.0));
+    if (n > n_max) {
+        n_max = n;
+        LOG("[coop] enemy life: %u players: enemies get %u%% of their life\n", n_max, 100 + per * (n_max - 1));
+    }
+    return 100 + (uint32_t)per * (n_max - 1);
+}
+// Set this actor's life to its share (life = the life read this frame; updated). Keeps the damage it has taken.
+static void enemy_hp_scale(struct Enemy *e, int32_t *life) {
+    if (*life <= 0 || e->animal || (strstr(e->name, "_Bone") && !strstr(e->name, "_Head"))) return;
+    uint32_t pct = enemy_hp_pct();
+    if (e->hp_pct == pct) return;
+    if (!e->hp_pct && *life > e->raw) e->raw = *life;
+    if (e->raw <= 0) return;
+    int64_t want = (int64_t)e->raw * pct / 100;
+    if (want > 100000) want = 100000;
+    int64_t from = e->hp_pct ? e->base : e->raw;  // (a new actor has the game's own life; else ours at hp_pct)
+    int64_t to = *life + (want - from);           // (lower too: the host turned it down; never kills)
+    if (to < 1) to = 1;
+    if (to > 100000) to = 100000;
+    if (to != *life) {
+        *life = (int32_t)to;
+        ST32(e->actor + ENEMY_LIFE, (uint32_t)*life);
+    }
+    e->base = (int32_t)want;
+    e->last = *life;
+    if (e->hp_pct != pct && (pct != 100 || e->hp_pct))
+        LOG("[coop] enemy %s %u life set to %u%%: %d (full %d -> %d)\n", e->name, e->hash, pct, *life, e->raw,
+            e->base);
+    e->hp_pct = pct;
 }
 static int battle_hold_c = -1, wake_fresh_c = -1, wake_kick_c = -1, target_calm_c = -1;
 static bool battle_hold_on(void) { return env_on("SAVAGEWIND_COOP_BATTLE_HOLD", &battle_hold_c); }

@@ -43,9 +43,11 @@ size_t settings_report_redact(unsigned char *data, size_t size) {
 
 Settings g_settings = {
     .coop_names = 1,
-    .coop_sharemarks = 1,
+    .coop_sharemarks = 2,
+    .coop_enemyhp = 0,
     .coop_upnp = 1,
     .split_pad = 1,
+    .split_map_zoom = 1,
     .fullscreen = false,
     .volume = 1.0f,
     .reverb = true,
@@ -683,12 +685,17 @@ void settings_load(void) {
         else if (!strcmp(key, "coop_host")) snprintf(g_settings.coop_host, sizeof g_settings.coop_host, "%s", val);
         else if (!strcmp(key, "coop_code")) snprintf(g_settings.coop_code, sizeof g_settings.coop_code, "%s", val);
         else if (!strcmp(key, "coop_names")) g_settings.coop_names = atoi(val) != 0;
-        else if (!strcmp(key, "coop_sharemarks")) g_settings.coop_sharemarks = atoi(val) >= 0 && atoi(val) <= 2 ? atoi(val) : 1;
+        // (2026-11-27: the default became All; the old key held Pins only for most players, so it is read once as
+        // Off or All, and the setting is saved under coop_marks from now on)
+        else if (!strcmp(key, "coop_sharemarks")) g_settings.coop_sharemarks = atoi(val) == 0 ? 0 : 2;
+        else if (!strcmp(key, "coop_marks")) g_settings.coop_sharemarks = atoi(val) >= 0 && atoi(val) <= 2 ? atoi(val) : 2;
+        else if (!strcmp(key, "coop_enemyhp")) g_settings.coop_enemyhp = atoi(val) >= 0 && atoi(val) <= 400 ? atoi(val) : 0;
         else if (!strcmp(key, "coop_upnp")) g_settings.coop_upnp = atoi(val) != 0;
         else if (!strcmp(key, "coop_tint")) g_settings.coop_tint = atoi(val) >= 0 && atoi(val) < 8 ? atoi(val) : 0;
         else if (!strcmp(key, "split_audio")) g_settings.split_audio = atoi(val) >= 0 && atoi(val) <= 2 ? atoi(val) : 0;
         else if (!strcmp(key, "split_layout")) g_settings.split_layout = atoi(val) == 1;
         else if (!strcmp(key, "split_pad")) g_settings.split_pad = atoi(val) >= 0 && atoi(val) < 4 ? atoi(val) : 1;
+        else if (!strcmp(key, "split_map_zoom")) g_settings.split_map_zoom = atoi(val) >= 0 && atoi(val) <= 2 ? atoi(val) : 1;
         else if (!strcmp(key, "split_audio_device"))
             snprintf(g_settings.split_audio_device, sizeof g_settings.split_audio_device, "%s", val);
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
@@ -942,10 +949,12 @@ void settings_save(void) {
     if (g_settings.coop_code[0]) fprintf(f, "coop_code = %s\n", g_settings.coop_code);
     fprintf(f, "coop_names = %d\n", g_settings.coop_names ? 1 : 0);
     fprintf(f, "coop_tint = %d\n", g_settings.coop_tint);
-    fprintf(f, "coop_sharemarks = %d\n", g_settings.coop_sharemarks);
+    fprintf(f, "coop_marks = %d\n", g_settings.coop_sharemarks);
+    fprintf(f, "coop_enemyhp = %d\n", g_settings.coop_enemyhp);
     fprintf(f, "coop_upnp = %d\n", g_settings.coop_upnp ? 1 : 0);
     fprintf(f, "split_audio = %d\n", g_settings.split_audio);
     fprintf(f, "split_layout = %d\nsplit_pad = %d\n", g_settings.split_layout, g_settings.split_pad);
+    fprintf(f, "split_map_zoom = %d\n", g_settings.split_map_zoom);
     if (g_settings.split_audio_device[0]) fprintf(f, "split_audio_device = %s\n", g_settings.split_audio_device);
     bind_settings_save(f);
     fclose(f);

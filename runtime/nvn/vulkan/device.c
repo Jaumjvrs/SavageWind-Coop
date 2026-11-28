@@ -2843,6 +2843,27 @@ void boot_splash_start(void) {
     ui_window_show();
 }
 
+#if defined(_WIN32) || defined(__linux__)
+// (split banner, runtime/coop_split.cpp; the main thread) the picture in this window until player 1 ends the process;
+// the game is never loaded
+void coop_banner_init(const char *root);  // (runtime/ui/coop_banner.mm: the players' map)
+void coop_banner_tick(void);
+void boot_splash_banner(const char *root) {
+    g_settings.boot_picture = 1;
+    coop_banner_init(root);
+    boot_splash_start();
+    LOG("[split] banner up\n");
+    for (;;) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e))
+            if (e.type == SDL_EVENT_QUIT) _exit(0);
+        coop_split_poll(window);  // (follows its pane)
+        coop_banner_tick();
+        SDL_Delay(50);
+    }
+}
+#endif
+
 static bool boot_held(void) {  // (GPU lock held: present_locked)
     if (!boot_hold) return false;
     atomic_store(&boot_drawing, false);  // (the game presents: the picture goes with its frames now)
@@ -3341,7 +3362,11 @@ void ui_window_init(void) {
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, win_h);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)wflags);
     void *split_child = coop_split_guest_window();
+#ifdef _WIN32
     if (split_child) SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, split_child);
+#else  // (Linux, runtime/coop_split_linux.inc: an X11 child window of player 1's container)
+    if (split_child) SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X11_WINDOW_NUMBER, (Sint64)(uintptr_t)split_child);
+#endif
     if (disp) {
         SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, (Sint64)SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
         SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, (Sint64)SDL_WINDOWPOS_CENTERED_DISPLAY(disp));

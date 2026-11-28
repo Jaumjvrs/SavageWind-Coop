@@ -13,6 +13,12 @@ enum { COOP_SPLIT_TOP, COOP_SPLIT_LEFT };
 bool coop_split_available(void);
 bool coop_split_request(bool add, int layout, int pad);  // guest pad 1..4
 int coop_split_pid(void);  // 0 when off or still launching
+// (4-player split screen) players this game started (0..3), how many it may start, the number the next one gets,
+// the highest number playing (0: none; Remove ends that one)
+int coop_split_count(void);
+int coop_split_max(void);
+int coop_split_next_player(void);
+int coop_split_last_player(void);
 bool coop_split_pending(void);
 bool coop_split_failed(void);
 int coop_split_host_pad(void);  // -2: usual input settings, -1: keyboard only, 1..4: controller

@@ -317,6 +317,7 @@ static void spawned_frame(Cpu *c, uint64_t now) {
         }
         e->actor = a, e->unit = LD64(a + PROC_UNIT), e->unit_id = LD32(a + PROC_ID);
         e->following = false, e->seen_ns = now, e->playing[0] = 0, e->born_ns = now;
+        e->hp_pct = 0;  // (ENEMYHP) a new actor
         int32_t life = (int32_t)LD32(a + ENEMY_LIFE);
         if (life > e->base && life <= 100000) e->base = life;
         e->last = life;
@@ -378,7 +379,10 @@ static void enemies_frame(Cpu *c) {
                 if (e->base) LOG("[coop] enemy %s %u full life %d -> %d\n", e->name, e->hash, e->base, life);
                 e->base = life;
                 e->last = life;
+                e->raw = life, e->hp_pct = 0;  // (ENEMYHP) the game's own full life: raise it again below
             }
+            // (ENEMYHP) more life with more players (enemies.inc enemy_hp_scale); not while a new copy settles
+            if (!(e->spawned && !e->native && now - e->born_ns < 1500000000ull)) enemy_hp_scale(e, &life);
             // (0.1.1, split-screen playtest 2026-11-26: enemies dead on one screen were still alive on the
             // other.) A Stalkoblin falls apart at life 0 and gets up again with its full life while its head lives;
             // the damage totals never go down, so every time it got up the partner's old damage was written again
@@ -447,6 +451,7 @@ static void enemies_frame(Cpu *c) {
                 e->inject_ns = 0;
             }
             e->applied_remote = remote;
+            if (e->last > 0) stal_rise(c, e, now);  // (STALRISE: a buried Stal body here, the other side's up)
             if (!e->mine) {
                 enemy_follow(c, e, e->last);
                 if (e->following) enemy_look_follow(c, e);  // (whom its head looks at; also with no body found)
